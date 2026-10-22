@@ -4,10 +4,12 @@
 //!
 //! | daff (JS)                        | this crate                      |
 //! |----------------------------------|---------------------------------|
-//! | `new daff.Table(rows)`           | [`Table::from_rows`]            |
+//! | `new daff.SimpleTable(w, h)`     | [`Table::new`]                  |
 //! | `daff.compareTables(a, b)`       | [`compare_tables`]              |
-//! | `align()`                        | [`Compare::align`]              |
+//! | `daff.compareTables3(p, a, b)`   | [`compare_tables3`]             |
+//! | `.align()`                       | [`CompareTable::align`]         |
 //! | `new daff.TableDiff(al, flags)`  | [`TableDiff::new`]              |
+//! | `.hilite(output)`                | [`TableDiff::hilite`]           |
 //! | `new daff.HighlightPatch(t, d)`  | [`HighlightPatch::new`]         |
 //! | `new daff.Merger(p, a, b, f)`    | [`Merger::new`]                 |
 
@@ -17,13 +19,16 @@ pub mod error;
 pub mod flags;
 pub mod format;
 pub mod merge;
+pub mod mover;
 pub mod patch;
 pub mod table;
+pub mod unit;
 
-pub use align::{compare_tables, Alignment, Compare};
-pub use diff::TableDiff;
+pub use align::{compare_tables, compare_tables3, Alignment, CompareTable};
+pub use diff::{DiffSummary, TableDiff};
 pub use error::{Error, Result};
 pub use flags::Flags;
 pub use merge::Merger;
 pub use patch::HighlightPatch;
 pub use table::Table;
+pub use unit::{Ordering, Unit};

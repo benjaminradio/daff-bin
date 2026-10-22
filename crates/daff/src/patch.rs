@@ -1,4 +1,4 @@
-use crate::{Result, Table};
+use crate::{Error, Result, Table};
 
 /// Applies a highlighter-format diff to a table.
 pub struct HighlightPatch<'a> {
@@ -12,6 +12,6 @@ impl<'a> HighlightPatch<'a> {
     }
 
     pub fn apply(&mut self) -> Result<()> {
-        Err(crate::Error::Unimplemented("HighlightPatch::apply"))
+        Err(Error::Unimplemented("HighlightPatch::apply"))
     }
 }

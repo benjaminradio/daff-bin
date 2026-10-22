@@ -1,4 +1,4 @@
-use crate::{Flags, Result, Table};
+use crate::{Error, Flags, Result, Table};
 
 /// Three-way merge of `parent`, `local`, `remote`.
 pub struct Merger<'a> {
@@ -15,6 +15,6 @@ impl<'a> Merger<'a> {
 
     /// Returns the number of conflicts; the merged result is written into `local`.
     pub fn apply(&self) -> Result<usize> {
-        Err(crate::Error::Unimplemented("Merger::apply"))
+        Err(Error::Unimplemented("Merger::apply"))
     }
 }
