@@ -112,6 +112,8 @@ pub enum PatchIssueKind {
     Conflict,
     /// There is no `@@` header row, so nothing could be applied.
     NoHeader,
+    /// A changed cell is in a column the table does not have (or the diff elides).
+    ColumnNotFound,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +165,7 @@ pub struct HighlightPatch<'a> {
     preamble_row: isize,
     finished_columns: bool,
     seen_header: bool,
+    header_patch_row: usize,
     skip_first_row: bool,
     // Row bookkeeping of the fixed algorithm (see `finish_rows_by_items`).
     items: Vec<Item>,
@@ -214,6 +217,7 @@ impl<'a> HighlightPatch<'a> {
             preamble_row: 0,
             finished_columns: false,
             seen_header: false,
+            header_patch_row: 0,
             skip_first_row: false,
             items: Vec::new(),
             orig: None,
@@ -364,6 +368,7 @@ impl<'a> HighlightPatch<'a> {
             done = true;
         } else if code == "@@" {
             self.seen_header = true;
+            self.header_patch_row = r as usize;
             self.preamble_row = r;
             self.apply_header();
             if crate::compat::reference_compat() {
@@ -1082,6 +1087,34 @@ impl<'a> HighlightPatch<'a> {
                     }
                 }
                 _ => {}
+            }
+        }
+        // Changes in columns that cannot be located (elided as `...`, or not in
+        // the header) would otherwise be dropped without a word.
+        for it in items.iter() {
+            if it.kind != Kind::Update {
+                continue;
+            }
+            self.current_row = it.patch_row;
+            self.check_act();
+            if !self.row_info.updated {
+                continue;
+            }
+            let vrow = self.row_info.value.clone().unwrap_or_default();
+            for c in self.payload_col..self.payload_top {
+                if pre.contains(&c) {
+                    continue;
+                }
+                let txt = self.patch.get(c, it.patch_row as usize).unwrap_or("").to_string();
+                if txt == "..." || !examine_cell(0, 0, Some(&txt), "", &vrow, 0).updated {
+                    continue;
+                }
+                let name = self.patch.get(c, self.header_patch_row).unwrap_or("").to_string();
+                issues.push(PatchIssue {
+                    patch_row: it.patch_row as usize,
+                    kind: PatchIssueKind::ColumnNotFound,
+                    message: format!("cannot apply `{txt}`: column `{name}` cannot be located in the table"),
+                });
             }
         }
         self.issues.extend(issues);

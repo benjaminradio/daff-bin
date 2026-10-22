@@ -187,8 +187,8 @@ does not change. Multi-row headers: Leave (use `--header-row`).
 ### G-08 Duplicate, blank and tag-like column names
 **Spec**: silent; the header row of a diff holds column names as data.
 **Evidence**: a column named `...`: `daff diff` shows the right change but
-`patch` skips the column (it reads `...` as "columns omitted") and silently
-leaves the cell unchanged — the one real collision between a data value and a
+`patch` skips the column (it reads `...` as "columns omitted") and without a word (reported since the end of phase 2)
+leaves the cell unchanged (it now reports `ColumnNotFound`, but cannot apply it) — the one real collision between a data value and a
 marker in the header row. Duplicate names work only through special-casing.
 **Options**: 1. Leave and warn. 2. Escape header cells that are `...`, using
 the same scheme as `NULL` (`...` becomes `_...`, `_...` becomes `__...`); the

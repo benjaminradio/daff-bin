@@ -293,3 +293,13 @@ fn b30_a_diff_without_a_header_is_reported() {
     assert_eq!(out, BASE);
     assert_eq!(issues[0].kind, daff::PatchIssueKind::NoHeader);
 }
+
+#[test]
+fn g08_change_in_an_unlocatable_column_is_reported() {
+    let a = "id,...,v\n1,x,a\n2,y,b\n";
+    let d = diff(None, a, "id,...,v\n1,x,a\n2,Y,b\n", Flags::default());
+    let (out, issues) = apply(a, &d, false);
+    assert_eq!(out, a);
+    assert_eq!(issues[0].kind, daff::PatchIssueKind::ColumnNotFound);
+    assert!(issues[0].message.contains("`...`"), "{}", issues[0].message);
+}
