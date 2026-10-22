@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/daff", "crates/daff-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/benjaminradio/daff-bin"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

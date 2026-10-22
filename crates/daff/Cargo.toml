@@ -1,0 +1,10 @@
+[package]
+name = "daff"
+description = "Tabular diff, patch and merge (port of the daff reference implementation)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+csv = "1"
+thiserror = "2"

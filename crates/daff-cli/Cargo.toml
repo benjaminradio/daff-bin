@@ -1,0 +1,15 @@
+[package]
+name = "daff-cli"
+description = "Command line interface for daff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "daff"
+path = "src/main.rs"
+
+[dependencies]
+daff = { path = "../daff" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
