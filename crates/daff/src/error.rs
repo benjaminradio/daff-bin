@@ -4,6 +4,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("csv error: {0}")]
     Csv(#[from] csv::Error),
+    #[error("{0}")]
+    Json(String),
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
     #[error("not implemented: {0}")]

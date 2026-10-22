@@ -3,11 +3,18 @@
 //! `diff`/`copy` are implied by file names, and formats are picked from file
 //! extensions.
 use daff::format::csv::Csv;
+use daff::format::json::{parse_ndjson, render_json, render_ndjson, table_from_json};
+use daff::value::parse_json;
 use daff::{
     compare_tables3, DiffRender, Flags, HighlightPatch, Merger, Table, TableDiff, TerminalDiffRender,
 };
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Errors exit with status 1 (an uncaught exception in the reference), or 2
+/// when `--fail-if-diff` is in effect.
+static FAIL_IF_DIFF: AtomicBool = AtomicBool::new(false);
 
 const PSV_DELIM: &str = "\u{1F4A9}";
 
@@ -85,12 +92,34 @@ impl State {
 
     fn load_table(&mut self, name: &str) -> Res<Table> {
         let ext = self.check_format(Some(name));
-        match ext.as_str() {
-            "sqlite" | "ndjson" | "json" => return Err(self.unsupported(&format!("format '{ext}'"))),
-            _ => {}
+        if ext == "sqlite" {
+            return Err(self.unsupported("format 'sqlite'"));
         }
         let bytes = std::fs::read(name).map_err(|e| format!("{name}: {e}"))?;
         let text = String::from_utf8_lossy(&bytes);
+        if ext == "ndjson" {
+            return parse_ndjson(&text).map_err(|e| e.to_string());
+        }
+        if ext == "json" || ext.is_empty() {
+            let parsed = parse_json(&text).map(|json| {
+                self.format_preference = Some("json".into());
+                json
+            });
+            match parsed {
+                Ok(json) => {
+                    if matches!(&json, daff::Value::Object(f) if f.iter().any(|(k, v)| k == "tables" && !matches!(v, daff::Value::Null))) {
+                        return Err(self.unsupported("JSON files with multiple tables"));
+                    }
+                    match table_from_json(&json).map_err(|e| e.to_string())? {
+                        Some(t) => return Ok(t),
+                        None if ext == "json" => return Err("JSON failed".into()),
+                        None => {}
+                    }
+                }
+                Err(e) if ext == "json" => return Err(e),
+                Err(_) => {}
+            }
+        }
         self.format_preference = Some("csv".into());
         let csv = Csv::with_delimiter(self.delim_preference.as_deref().unwrap_or(","));
         let parsed = csv.parse_full(&text);
@@ -169,7 +198,8 @@ impl State {
                 Ok(None)
             }
             Some("sqlite") => Err("Cannot yet output to sqlite, aborting".into()),
-            other => Err(self.unsupported(&format!("output format '{}'", other.unwrap_or("json")))),
+            Some("ndjson") => Ok(Some(render_ndjson(t))),
+            _ => Ok(Some(render_json(t))),
         }
     }
 
@@ -354,7 +384,10 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
                     other => return Err(format!("Expected line ending of either 'crlf' or 'lf' but got {other}")),
                 };
             }
-            "--fail-if-diff" => o.fail_if_diff = true,
+            "--fail-if-diff" => {
+                o.fail_if_diff = true;
+                FAIL_IF_DIFF.store(true, Ordering::Relaxed);
+            }
             "-h" | "--help" | "help" => o.args.insert(0, "help".into()),
             _ => o.args.push(tag),
         }
@@ -472,7 +505,7 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("daff: {e}");
-            ExitCode::from(2)
+            ExitCode::from(if FAIL_IF_DIFF.load(Ordering::Relaxed) { 2 } else { 1 })
         }
     }
 }

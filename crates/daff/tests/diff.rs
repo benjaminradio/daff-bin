@@ -91,3 +91,21 @@ mod patch_and_merge {
         assert_eq!(csv(&Table::new(0, 0)), "\n");
     }
 }
+
+mod json {
+    use daff::format::json::{parse_table, render_json};
+    use daff::{compare_tables, Flags, TableDiff};
+
+    #[test]
+    fn nested_update_cells_keep_types() {
+        let src = |n: &str| {
+            format!(r#"{{"t":{{"columns":["id","n"],"rows":[{{"id":"id","n":"n"}},{{"id":1,"n":{n}}}]}}}}"#)
+        };
+        let (a, b) = (parse_table(&src("1.5")).unwrap().unwrap(), parse_table(&src("2")).unwrap().unwrap());
+        let flags = Flags { allow_nested_cells: true, ordered: false, unchanged_context: 0, ..Flags::default() };
+        let align = compare_tables(&a, &b, Some(&flags)).align();
+        let out = render_json(&TableDiff::new(&align, flags).highlight());
+        let compact: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(compact, r#"{"sheet":[["@@","id","n"],["->",1,{"before":1.5,"after":2}]]}"#);
+    }
+}

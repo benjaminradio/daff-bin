@@ -25,6 +25,7 @@ pub mod patch;
 pub mod render;
 pub mod table;
 pub mod unit;
+pub mod value;
 
 pub use align::{compare_tables, compare_tables3, Alignment, CompareTable, IndexPair, Row};
 pub use cell_info::{examine_cell, CellInfo};
@@ -36,3 +37,4 @@ pub use patch::HighlightPatch;
 pub use render::{DiffRender, TerminalDiffRender};
 pub use table::Table;
 pub use unit::{Ordering, Unit};
+pub use value::{Cell, Value};

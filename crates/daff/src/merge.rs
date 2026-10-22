@@ -81,8 +81,8 @@ impl<'a> Merger<'a> {
                         if pcell != rcell {
                             let lcell = self.local.get(col.l as usize, row.l as usize);
                             if pcell == lcell {
-                                let v = rcell.map(String::from);
-                                self.local.set(col.l as usize, row.l as usize, v);
+                                let v = self.remote.get_cell(col.r as usize, row.r as usize).cloned();
+                                self.local.set_cell(col.l as usize, row.l as usize, v);
                             } else if rcell != lcell {
                                 let (p, l, r) = (
                                     pcell.unwrap_or("").to_string(),
@@ -122,13 +122,13 @@ impl<'a> Merger<'a> {
             for unit in &units {
                 if unit.l >= 0 && unit.r >= 0 {
                     if let Some(&y) = row_local.get(&unit.l) {
-                        let v = self.remote.get(x as usize, unit.r as usize).map(String::from);
-                        self.local.set(x2, y, v);
+                        let v = self.remote.get_cell(x as usize, unit.r as usize).cloned();
+                        self.local.set_cell(x2, y, v);
                     }
                 } else if unit.p < 0 && unit.r >= 0 {
                     if let Some(&y) = row_remote.get(&unit.r) {
-                        let v = self.remote.get(x as usize, unit.r as usize).map(String::from);
-                        self.local.set(x2, y, v);
+                        let v = self.remote.get_cell(x as usize, unit.r as usize).cloned();
+                        self.local.set_cell(x2, y, v);
                     }
                 }
             }
@@ -138,8 +138,8 @@ impl<'a> Merger<'a> {
             for unit in &column_units {
                 if unit.l >= 0 && unit.r >= 0 {
                     if let Some(&x) = col_local.get(&unit.l) {
-                        let v = self.remote.get(unit.r as usize, y as usize).map(String::from);
-                        self.local.set(x, y2, v);
+                        let v = self.remote.get_cell(unit.r as usize, y as usize).cloned();
+                        self.local.set_cell(x, y2, v);
                     }
                 }
             }

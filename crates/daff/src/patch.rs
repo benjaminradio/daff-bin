@@ -553,8 +553,8 @@ impl<'a> HighlightPatch<'a> {
             if !cmod.rem && cmod.add {
                 for m in &self.mods {
                     if m.patch_row != -1 && m.dest_row != -1 {
-                        let d = self.patch.get(cmod.patch_row as usize, m.patch_row as usize).map(String::from);
-                        self.source.set(cmod.dest_row as usize, m.dest_row as usize, d);
+                        let d = self.patch.get_cell(cmod.patch_row as usize, m.patch_row as usize).cloned();
+                        self.source.set_cell(cmod.dest_row as usize, m.dest_row as usize, d);
                     }
                 }
                 let hdr = self.header.get(&(cmod.patch_row as usize)).cloned();
@@ -600,8 +600,8 @@ impl<'a> HighlightPatch<'a> {
                 for &c in self.header_post.values() {
                     if let Some(&offset) = pidc.get(&c) {
                         if offset >= 0 {
-                            let d = self.patch.get(c, m.patch_row as usize).map(String::from);
-                            self.source.set(offset as usize, m.dest_row as usize, d);
+                            let d = self.patch.get_cell(c, m.patch_row as usize).cloned();
+                            self.source.set_cell(offset as usize, m.dest_row as usize, d);
                         }
                     }
                 }

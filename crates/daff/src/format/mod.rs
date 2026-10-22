@@ -3,6 +3,7 @@ use crate::{Result, Table};
 use std::io::{Read, Write};
 
 pub mod csv;
+pub mod json;
 
 pub trait TableReader {
     fn read(&self, input: &mut dyn Read) -> Result<Table>;

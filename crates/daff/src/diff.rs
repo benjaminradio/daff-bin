@@ -2,6 +2,7 @@
 //! builder). Meta tables, nested tables and SQL sources are not supported.
 use crate::mover::move_units;
 use crate::unit::Unit;
+use crate::value::{Cell, Value};
 use crate::{Alignment, Flags, Table};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -55,6 +56,7 @@ pub struct TableDiff<'a> {
     allow_delete: bool,
     allow_update: bool,
     allow_column: bool,
+    builder: Builder,
     sep: String,
     conflict_sep: String,
     schema: Vec<String>,
@@ -219,9 +221,25 @@ fn parse_float(s: &str) -> Option<f64> {
     s[..i].parse().ok()
 }
 
+/// How update, conflict and marker cells are built (`coopy.CellBuilder`):
+/// flat text (`a->b`) for tabular output, or nested hashes for JSON.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Builder {
+    Flat,
+    Nested,
+}
+
+fn neg_to_null(x: isize) -> Value {
+    if x < 0 { Value::Null } else { Value::Num(x as f64) }
+}
+
+fn value_of(c: Option<&Cell>) -> Value {
+    c.map_or(Value::Null, Cell::to_value)
+}
+
 /// `FlatCellBuilder.quoteForDiff`.
-fn quote_for_diff(d: Option<&str>) -> String {
-    let Some(s) = d else { return "NULL".into() };
+fn quote_for_diff(d: Option<&Cell>) -> String {
+    let Some(s) = d.map(Cell::text) else { return "NULL".into() };
     let score = s.chars().take_while(|&c| c == '_').count();
     if s.chars().skip(score).collect::<String>() == "NULL" {
         format!("_{s}")
@@ -259,6 +277,7 @@ impl<'a> TableDiff<'a> {
             allow_delete: true,
             allow_update: true,
             allow_column: true,
+            builder: Builder::Flat,
             sep: String::new(),
             conflict_sep: String::new(),
             schema: Vec::new(),
@@ -388,13 +407,18 @@ impl<'a> TableDiff<'a> {
         self.allow_delete = self.flags.allow_delete();
         self.allow_update = self.flags.allow_update();
         self.allow_column = self.flags.allow_column();
+        self.builder = if self.flags.allow_nested_cells { Builder::Nested } else { Builder::Flat };
     }
 
-    fn header_cell<'t>(t: &'t Table, x: isize, y: isize) -> Option<&'t str> {
+    fn header_cell(t: &Table, x: isize, y: isize) -> Option<&Cell> {
         if x < 0 || y < 0 {
             return None;
         }
-        t.get(x as usize, y as usize)
+        t.get_cell(x as usize, y as usize)
+    }
+
+    fn header_text(t: &Table, x: isize, y: isize) -> Option<&str> {
+        Self::header_cell(t, x, y).map(Cell::text)
     }
 
     fn setup_columns(&mut self) {
@@ -405,7 +429,7 @@ impl<'a> TableDiff<'a> {
                 let mut s = HashSet::new();
                 if tab.height() as isize >= header {
                     for i in 0..tab.width() {
-                        let name = Self::header_cell(tab, i as isize, header).unwrap_or("");
+                        let name = Self::header_text(tab, i as isize, header).unwrap_or("");
                         if flags.is_ignored(name) {
                             s.insert(i as isize);
                         }
@@ -520,8 +544,8 @@ impl<'a> TableDiff<'a> {
             }
             if cunit.r >= 0 && cunit.lp() >= 0 {
                 if self.p.height() as isize >= self.rp_header && self.b.height() as isize >= self.rb_header {
-                    let pp = Self::header_cell(&self.p, cunit.lp(), self.rp_header);
-                    let bb = Self::header_cell(&self.b, cunit.r, self.rb_header);
+                    let pp = Self::header_text(&self.p, cunit.lp(), self.rp_header);
+                    let bb = Self::header_text(&self.b, cunit.r, self.rb_header);
                     if !self.is_equal(pp, bb) {
                         self.have_schema = true;
                         act = format!("({})", pp.unwrap_or(""));
@@ -555,11 +579,28 @@ impl<'a> TableDiff<'a> {
         }
     }
 
-    fn links(&self, unit: &Unit, row_like: bool) -> String {
-        if self.flags.count_like_a_spreadsheet && !row_like {
-            unit.to_base26_string()
-        } else {
-            unit.to_string()
+    fn links(&self, unit: &Unit, row_like: bool) -> Cell {
+        match self.builder {
+            Builder::Flat => Cell::Str(if self.flags.count_like_a_spreadsheet && !row_like {
+                unit.to_base26_string()
+            } else {
+                unit.to_string()
+            }),
+            Builder::Nested => {
+                let fields = if unit.p >= -1 {
+                    vec![
+                        ("before".to_string(), neg_to_null(unit.p)),
+                        ("ours".to_string(), neg_to_null(unit.l)),
+                        ("theirs".to_string(), neg_to_null(unit.r)),
+                    ]
+                } else {
+                    vec![
+                        ("before".to_string(), neg_to_null(unit.l)),
+                        ("after".to_string(), neg_to_null(unit.r)),
+                    ]
+                };
+                Cell::from_value(Value::Hash(fields)).unwrap()
+            }
         }
     }
 
@@ -572,7 +613,7 @@ impl<'a> TableDiff<'a> {
             for i in 0..output.height() {
                 match self.row_map.get(&i) {
                     None => output.set(0, i, Some("")),
-                    Some(unit) => output.set(0, i, Some(self.links(unit, true))),
+                    Some(unit) => output.set_cell(0, i, Some(self.links(unit, true))),
                 }
             }
             let target: Vec<Option<usize>> = (0..output.height()).map(|i| Some(i + 1)).collect();
@@ -580,7 +621,7 @@ impl<'a> TableDiff<'a> {
             for i in 1..output.width() {
                 match self.col_map.get(&(i - 1)) {
                     None => output.set(i, 0, Some("")),
-                    Some(unit) => output.set(i, 0, Some(self.links(unit, false))),
+                    Some(unit) => output.set_cell(i, 0, Some(self.links(unit, false))),
                 }
             }
             output.set(0, 0, Some("@:@"));
@@ -647,7 +688,7 @@ impl<'a> TableDiff<'a> {
                     None
                 };
                 if let Some(c) = cell {
-                    output.set(j + 1, at, c);
+                    output.set_cell(j + 1, at, c.cloned());
                 }
                 self.col_map.insert(j + 1, cunit);
             }
@@ -675,42 +716,44 @@ impl<'a> TableDiff<'a> {
         let mut row_update = false;
         for j in 0..self.column_units.len() {
             let cunit = self.column_units[j];
-            let (mut pp, mut ll, mut rr): (Option<String>, Option<String>, Option<String>) = (None, None, None);
+            let (mut pp, mut ll, mut rr): (Option<Cell>, Option<Cell>, Option<Cell>) = (None, None, None);
             let (mut have_pp, mut have_ll, mut have_rr) = (false, false, false);
             if cunit.p >= 0 && unit.p >= 0 {
-                pp = self.p.get(cunit.p as usize, unit.p as usize).map(String::from);
+                pp = self.p.get_cell(cunit.p as usize, unit.p as usize).cloned();
                 have_pp = true;
             }
             if cunit.l >= 0 && unit.l >= 0 {
-                ll = self.a.get(cunit.l as usize, unit.l as usize).map(String::from);
+                ll = self.a.get_cell(cunit.l as usize, unit.l as usize).cloned();
                 have_ll = true;
             }
             if cunit.r >= 0 && unit.r >= 0 {
-                rr = self.b.get(cunit.r as usize, unit.r as usize).map(String::from);
+                rr = self.b.get_cell(cunit.r as usize, unit.r as usize).cloned();
                 have_rr = true;
                 if (if have_pp { cunit.p } else { cunit.l }) < 0
-                    && rr.as_deref().is_some_and(|s| !s.is_empty())
+                    && rr.as_ref().is_some_and(|c| !c.text().is_empty())
                     && self.allow_column
                 {
                     self.have_addition = true;
                 }
             }
+            let text = |c: &Option<Cell>| c.as_ref().map(|c| c.text().to_string());
+            let (pp_t, ll_t, rr_t) = (text(&pp), text(&ll), text(&rr));
 
-            let dd: Option<String>;
-            let mut dd_to: Option<String> = None;
+            let dd: Option<Cell>;
+            let mut dd_to: Option<Cell> = None;
             let mut have_dd_to = false;
-            let mut dd_to_alt: Option<String> = None;
+            let mut dd_to_alt: Option<Cell> = None;
             let mut have_dd_to_alt = false;
             if have_pp {
                 if !have_rr {
                     dd = pp.clone();
-                } else if self.is_equal(pp.as_deref(), rr.as_deref()) {
+                } else if self.is_equal(pp_t.as_deref(), rr_t.as_deref()) {
                     dd = ll.clone();
                 } else {
                     dd = pp.clone();
                     dd_to = rr.clone();
                     have_dd_to = true;
-                    if !self.is_equal(pp.as_deref(), ll.as_deref()) {
+                    if !self.is_equal(pp_t.as_deref(), ll_t.as_deref()) {
                         dd_to_alt = ll.clone();
                         have_dd_to_alt = true;
                     }
@@ -718,7 +761,7 @@ impl<'a> TableDiff<'a> {
             } else if have_ll {
                 if !have_rr {
                     dd = ll.clone();
-                } else if self.is_equal(ll.as_deref(), rr.as_deref()) {
+                } else if self.is_equal(ll_t.as_deref(), rr_t.as_deref()) {
                     dd = ll.clone();
                 } else {
                     dd = ll.clone();
@@ -729,7 +772,7 @@ impl<'a> TableDiff<'a> {
                 dd = rr.clone();
             }
 
-            let mut cell: Option<String> = dd.clone();
+            let mut cell: Option<Cell> = dd.clone();
             if have_dd_to && ((dd.is_some() && self.allow_update) || self.allow_column) {
                 if !row_update {
                     if out == 0 {
@@ -741,30 +784,50 @@ impl<'a> TableDiff<'a> {
                     ac[j] = 1;
                 }
                 if self.sep.is_empty() {
-                    self.sep = separator_for(&self.a, &self.b, "->");
+                    self.sep = match self.builder {
+                        Builder::Flat => separator_for(&self.a, &self.b, "->"),
+                        Builder::Nested => "->".into(),
+                    };
                 }
-                let is_conflict = have_dd_to_alt && !self.is_equal(dd_to.as_deref(), dd_to_alt.as_deref());
+                let is_conflict = have_dd_to_alt
+                    && !self.is_equal(dd_to.as_ref().map(Cell::text), dd_to_alt.as_ref().map(Cell::text));
                 if !is_conflict {
-                    cell = Some(format!(
-                        "{}{}{}",
-                        quote_for_diff(dd.as_deref()),
-                        self.sep,
-                        quote_for_diff(dd_to.as_deref())
-                    ));
+                    cell = Some(match self.builder {
+                        Builder::Flat => Cell::Str(format!(
+                            "{}{}{}",
+                            quote_for_diff(dd.as_ref()),
+                            self.sep,
+                            quote_for_diff(dd_to.as_ref())
+                        )),
+                        Builder::Nested => Cell::from_value(Value::Hash(vec![
+                            ("before".into(), value_of(dd.as_ref())),
+                            ("after".into(), value_of(dd_to.as_ref())),
+                        ]))
+                        .unwrap(),
+                    });
                     if self.sep.len() > self.act.len() {
                         self.act = self.sep.clone();
                     }
                 } else {
                     if self.conflict_sep.is_empty() {
-                        self.conflict_sep = format!("{}{}", separator_for(&self.p, &self.a, "!"), self.sep);
+                        self.conflict_sep = match self.builder {
+                            Builder::Flat => format!("{}{}", separator_for(&self.p, &self.a, "!"), self.sep),
+                            Builder::Nested => "!->".into(),
+                        };
                     }
-                    let cs = &self.conflict_sep;
-                    cell = Some(format!(
-                        "{}{cs}{}{cs}{}",
-                        dd.as_deref().unwrap_or(""),
-                        dd_to_alt.as_deref().unwrap_or(""),
-                        dd_to.as_deref().unwrap_or("")
-                    ));
+                    cell = Some(match self.builder {
+                        Builder::Flat => {
+                            let cs = &self.conflict_sep;
+                            let t = |c: &Option<Cell>| c.as_ref().map_or(String::new(), |c| c.text().to_string());
+                            Cell::Str(format!("{}{cs}{}{cs}{}", t(&dd), t(&dd_to_alt), t(&dd_to)))
+                        }
+                        Builder::Nested => Cell::from_value(Value::Hash(vec![
+                            ("before".into(), value_of(dd.as_ref())),
+                            ("ours".into(), value_of(dd_to_alt.as_ref())),
+                            ("theirs".into(), value_of(dd_to.as_ref())),
+                        ]))
+                        .unwrap(),
+                    });
                     self.act = self.conflict_sep.clone();
                 }
                 if self.column_units_updated.insert(j) {
@@ -780,7 +843,7 @@ impl<'a> TableDiff<'a> {
                 }
             }
             if self.publish && self.active_column.as_ref().map_or(true, |ac| ac[j] > 0) {
-                output.set(j + 1, at, cell);
+                output.set_cell(j + 1, at, cell);
             }
         }
         if self.publish {

@@ -1,3 +1,4 @@
+use crate::value::Cell;
 use std::fmt;
 
 /// A table of nullable string cells, ported from `coopy.SimpleTable`.
@@ -5,9 +6,9 @@ use std::fmt;
 /// Storage is a flat vector indexed by `x + y * width`, exactly as in the
 /// reference: [`Table::resize`] changes the dimensions without moving data.
 /// Cells that were never set are `None` (null), which is distinct from `""`.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Table {
-    data: Vec<Option<String>>,
+    data: Vec<Option<Cell>>,
     w: usize,
     h: usize,
 }
@@ -48,15 +49,27 @@ impl Table {
         if x >= self.w || y >= self.h {
             return None;
         }
-        self.data.get(x + y * self.w)?.as_deref()
+        self.data.get(x + y * self.w)?.as_ref().map(Cell::text)
     }
 
     pub fn set<S: Into<String>>(&mut self, x: usize, y: usize, c: Option<S>) {
+        self.set_cell(x, y, c.map(|s| Cell::Str(s.into())));
+    }
+
+    /// The full cell value (which may be a non-string, from JSON input).
+    pub fn get_cell(&self, x: usize, y: usize) -> Option<&Cell> {
+        if x >= self.w || y >= self.h {
+            return None;
+        }
+        self.data.get(x + y * self.w)?.as_ref()
+    }
+
+    pub fn set_cell(&mut self, x: usize, y: usize, c: Option<Cell>) {
         let idx = x + y * self.w;
         if idx >= self.data.len() {
             self.data.resize(idx + 1, None);
         }
-        self.data[idx] = c.map(Into::into);
+        self.data[idx] = c;
     }
 
     /// Change dimensions without relocating data (flat index semantics).

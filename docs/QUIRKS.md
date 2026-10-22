@@ -132,6 +132,54 @@ default stays byte-compatible.
     `--fail-if-diff`), after printing `N conflict(s)` on stderr and still
     writing the merged table.
 
+## JSON and NDJSON
+
+29. **JSON tables have no header row.** Input is
+    `{"name": {"columns": [...], "rows": [...]}}`; `columns` only sets the
+    width and the keys to read. The column names are *not* added to the
+    table, so the diff treats the first data row as the header.
+    **Improvement candidate.** (`format/json.rs: table_from_json`)
+30. **Array rows are read as objects.** Whether rows are objects or arrays is
+    decided by `Reflect.fields(row).length == columns.length`, which is also
+    true for an array of that length, so array rows are looked up by *column
+    name* and come out empty (the reference then hangs, see deviations).
+    The port mirrors the lookup (including JavaScript's array `length` and
+    index properties). **Improvement candidate.**
+31. **Unknown extensions are tried as JSON first.** For a file whose
+    extension is not recognised, the content is parsed as JSON before CSV; a
+    CSV file that happens to be valid JSON with `columns` and `rows` fields
+    is read as JSON. `format_preference` is switched to `json` even if the
+    JSON route then fails, but `nested_output` is only derived from the file
+    extension. (`daff-cli`, `State::load_table`)
+32. **JSON output is written without a trailing newline**, as
+    `{"sheet": [[...]]}` (two-space indent). Diff cells for updates are
+    `{"before": x, "after": y}` objects (`{"before","ours","theirs"}` for
+    conflicts), row/column numbers with `--index` are
+    `{"before": n, "after": n}` objects, and the update markers are plain
+    `->`/`!->`. The diff is unordered by default for JSON input.
+    (`diff.rs: Builder::Nested`)
+33. **Strings are only minimally escaped.** The JSON writer escapes `"`, `\`,
+    `\n`, `\r`, `\t`, backspace and form feed; every other character
+    (including other control characters and U+2028) is written raw.
+    (`value.rs: quote`)
+34. **Non-string cells convert through `Std.string`.** Cells that are arrays or
+    objects compare, sort and print as the Haxe string form: `[1,[2,null]]`,
+    and objects as a tab-indented `{\n\tk : 1, \n\tj : …\n}` block (arrays
+    indent their contents too). In CSV output a nested diff cell therefore
+    prints as `{ h : { before : …, after : … } }` over several lines.
+    (`value.rs: Value::to_text`)
+35. **NDJSON** is read from the last line to the first, so columns are
+    numbered in the order the *last* rows mention them, and the table width
+    grows while rows are filled in (flat-index storage then scrambles earlier
+    rows if later lines add columns). It is written without the header row
+    (and with `@:@` as the first key when an index column is present).
+    (`format/json.rs: parse_ndjson`)
+36. **Errors exit with status 1** (an uncaught exception in the reference),
+    or 2 with `--fail-if-diff`.
+37. **HTML output of nested (JSON) diffs crashes** in the reference
+    (`s.split is not a function`). The port does not try to reproduce the
+    crash.
+
 ## Deliberate deviations
 
 These are the only places where the port intentionally differs from the
@@ -141,3 +189,6 @@ reference output.
    example the overflowing-row message above) to *stdout*, in front of the
    table, which corrupts piped output. The port prints the same text on
    stderr. (`daff-cli`, `Io::load`)
+2. **No infinite loop on blank JSON tables.** `trimBlank` never terminates in
+   the reference when every cell is blank (for example JSON with array rows,
+   quirk 30). The port stops at zero rows. (`Table::trim_blank`)
