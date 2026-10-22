@@ -110,6 +110,8 @@ pub enum PatchIssueKind {
     RowNotFound,
     /// The diff itself records a conflict.
     Conflict,
+    /// There is no `@@` header row, so nothing could be applied.
+    NoHeader,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +162,8 @@ pub struct HighlightPatch<'a> {
     have_dropped_columns: bool,
     preamble_row: isize,
     finished_columns: bool,
+    seen_header: bool,
+    skip_first_row: bool,
     // Row bookkeeping of the fixed algorithm (see `finish_rows_by_items`).
     items: Vec<Item>,
     orig: Option<Rc<Table>>,
@@ -209,6 +213,8 @@ impl<'a> HighlightPatch<'a> {
             have_dropped_columns: false,
             preamble_row: 0,
             finished_columns: false,
+            seen_header: false,
+            skip_first_row: false,
             items: Vec::new(),
             orig: None,
             force: false,
@@ -253,6 +259,8 @@ impl<'a> HighlightPatch<'a> {
         self.have_dropped_columns = false;
         self.preamble_row = 0;
         self.finished_columns = false;
+        self.seen_header = false;
+        self.skip_first_row = false;
         self.items.clear();
         self.issues.clear();
         self.orig = None;
@@ -268,9 +276,21 @@ impl<'a> HighlightPatch<'a> {
         self.payload_col = 1 + self.rc_offset;
         self.payload_top = patch.width();
         self.rc_offset = usize::from(patch.get(0, 0).unwrap_or("") == "@:@");
+        self.skip_first_row = self.rc_offset > 0;
         if !crate::compat::reference_compat() {
+            // The action column is the one holding `@@`, wherever it is: the
+            // spec asks readers to cope with extra rows and columns before it.
             // With an index column the payload starts one column later; the
             // reference treats the action column as data (quirk 17).
+            self.skip_first_row = patch.get(0, 0) == Some("@:@");
+            'sniff: for r in 0..patch.height().min(10) {
+                for c in 0..patch.width().min(5) {
+                    if patch.get(c, r) == Some("@@") {
+                        self.rc_offset = c;
+                        break 'sniff;
+                    }
+                }
+            }
             self.payload_col = 1 + self.rc_offset;
         }
         for r in 0..patch.height() {
@@ -279,6 +299,14 @@ impl<'a> HighlightPatch<'a> {
         self.preamble_row = self.rc_offset as isize;
         for r in 0..patch.height() {
             self.apply_row(r as isize);
+        }
+        if !self.seen_header && !crate::compat::reference_compat() {
+            self.issues.push(PatchIssue {
+                patch_row: 0,
+                kind: PatchIssueKind::NoHeader,
+                message: "the diff has no @@ header row; nothing was applied".into(),
+            });
+            return Ok(true);
         }
         self.finish_columns();
         self.finish_rows();
@@ -332,9 +360,10 @@ impl<'a> HighlightPatch<'a> {
         self.current_row = r;
         let mut code = self.actions[r as usize].clone();
         let mut done = false;
-        if r == 0 && self.rc_offset > 0 {
+        if r == 0 && self.skip_first_row {
             done = true;
         } else if code == "@@" {
+            self.seen_header = true;
             self.preamble_row = r;
             self.apply_header();
             if crate::compat::reference_compat() {
@@ -352,6 +381,9 @@ impl<'a> HighlightPatch<'a> {
             // "cannot usefully apply diffs with metadata yet"
             self.preamble_row = r;
             self.need_source_columns();
+            done = true;
+        } else if !self.seen_header && !crate::compat::reference_compat() {
+            // rows before the header are not part of the diff
             done = true;
         }
         if !done && !crate::compat::reference_compat() {
@@ -964,7 +996,7 @@ impl<'a> HighlightPatch<'a> {
                             Some((sc, v))
                         })
                         .collect();
-                    let found = (1..orig.height()).find(|&r| {
+                    let found = (1..orig.height()).filter(|_| !wanted.is_empty()).find(|&r| {
                         !self.used_rows.contains(&r)
                             && wanted.iter().all(|(sc, v)| same(orig.get(*sc, r), v.as_deref()))
                     });

@@ -49,6 +49,8 @@ The properties are checked by `scripts/prop_roundtrip.py` and
 | B-23 | INTENT | `--inplace` never works | fixed |
 | B-24 | INTENT | `patch` does not notice that a row is already present or has changed | fixed |
 | B-28 | INTENT | `patch` of a diff made with `--index` treats the action column as data | fixed |
+| B-29 | SPEC | Rows or columns before the `@@` row make `patch` silently do nothing (spec asks readers to cope) | fixed |
+| B-30 | INTENT | A diff with no `@@` row is silently ignored | fixed |
 | B-25 | INTENT | Terminal columns are aligned by UTF-16 length, not display width | fixed |
 | B-26 | INTENT | Table names are not escaped in HTML headings | fixed |
 
@@ -184,6 +186,12 @@ in multi-table HTML are inserted into `<h3>` without escaping.
   `diff line N: ...`, and the exit status is 1, like a merge with conflicts.
   `patch --force` (or `--reference-compat`) skips the checks. In the library:
   `HighlightPatch::issues()` and `force()`.
+- **B-29/B-30** were found while writing `GAPS.md` (G-15). The reference runs
+  its column bookkeeping at the first row it sees, before the header, so any
+  preamble row ruins the patch; a leading extra column destroys the table
+  (`NULL` everywhere). `patch` now finds the action column by locating `@@`
+  (first ten rows, first five columns), ignores everything before the header
+  row, and reports a diff without one.
 - **B-28**: with an index column (`@:@` corner) the reference starts reading
   the payload one column too early, so the action column is read as a column
   called `@@`. Fixed together with B-24, which exposed it.

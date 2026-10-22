@@ -272,3 +272,24 @@ fn b28_index_diffs_apply() {
     assert!(d.starts_with("@:@"), "{d}");
     assert_eq!(apply(BASE, &d, false).0, WANT);
 }
+
+#[test]
+fn b29_rows_and_columns_before_the_header_are_skipped() {
+    let want = "id,v\n1,a\n2,B\n3,c\n";
+    for d in [
+        "title\n@@,id,v\n,1,a\n->,2,b->B\n",
+        "title,,\n@@,id,v\n,1,a\n->,2,b->B\n",
+        "note,@@,id,v\nx,,1,a\ny,->,2,b->B\n",
+        "@@,id,v\n@mode@,ordered,\n,1,a\n->,2,b->B\n",
+    ] {
+        let (out, issues) = apply(BASE, d, false);
+        assert_eq!((out.as_str(), issues.len()), (want, 0), "{d}");
+    }
+}
+
+#[test]
+fn b30_a_diff_without_a_header_is_reported() {
+    let (out, issues) = apply(BASE, "just,junk\n1,2\n", false);
+    assert_eq!(out, BASE);
+    assert_eq!(issues[0].kind, daff::PatchIssueKind::NoHeader);
+}
