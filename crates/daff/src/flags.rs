@@ -26,6 +26,10 @@ pub struct Flags {
     pub ignore_epsilon: f64,
     pub use_glyphs: bool,
     pub quote_html: bool,
+    /// `dense`, `sparse` or `smart` (terminal rendering only).
+    pub padding_strategy: Option<String>,
+    /// `ansi` forces colour, `plain` forbids it, `None` decides from the terminal.
+    pub terminal_format: Option<String>,
 }
 
 impl Default for Flags {
@@ -52,6 +56,8 @@ impl Default for Flags {
             ignore_epsilon: -1.0,
             use_glyphs: true,
             quote_html: true,
+            padding_strategy: None,
+            terminal_format: None,
         }
     }
 }

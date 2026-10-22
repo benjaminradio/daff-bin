@@ -140,3 +140,17 @@ pub fn examine_cell(
     }
     cell
 }
+
+/// Examine cell `(x, y)` of a diff table (`DiffRender.renderCell`).
+pub fn render_cell(tab: &crate::Table, x: usize, y: usize) -> CellInfo {
+    let corner = tab.get(0, 0).unwrap_or("");
+    let off = usize::from(corner == "@:@");
+    examine_cell(
+        x,
+        y,
+        tab.get(x, y),
+        tab.get(x, off).unwrap_or(""),
+        tab.get(off, y).unwrap_or(""),
+        off,
+    )
+}

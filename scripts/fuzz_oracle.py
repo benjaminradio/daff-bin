@@ -4,7 +4,7 @@ implementation (npm `daff`) on random tables.
 
 Usage: [MODE=diff|patch|merge] [THREE=fraction] fuzz_oracle.py REFERENCE_DAFF_JS OUR_DAFF_BINARY [N] [SEED]
 
-MODE=patch applies (patch3: 3-way diffs) reference-generated diffs with both implementations;
+MODE=html|color|render|copy compare rendered output; MODE=patch applies (patch3: 3-way diffs) reference-generated diffs with both implementations;
 MODE=merge merges random parent/local/remote triples.
 """
 import os, random, subprocess, sys, tempfile
@@ -87,7 +87,24 @@ with tempfile.TemporaryDirectory() as d:
             write(a, base); write(b, mutate(base))
             files = [a, b]
         opts = rnd.choice(OPTS)
-        if mode == "diff":
+        if mode in ("html", "color", "render", "copy"):
+            extra = {
+                "html": ["--output-format", "html"] + rnd.choice([[], ["--fragment"], ["--plain"], ["--unquote"], ["--fragment", "--plain"]]),
+                "color": ["--color"] + rnd.choice([[], ["--padding", "dense"], ["--padding", "sparse"], ["--plain"]]),
+                "render": [], "copy": [],
+            }[mode]
+            if mode == "render":
+                dp = os.path.join(d, "d.csv")
+                with open(dp, "w") as f:
+                    f.write(run(["node", ref, "diff", *opts, *files])[1])
+                cmd = ["render", *rnd.choice([[], ["--fragment"], ["--plain"], ["--unquote"]]), dp]
+            elif mode == "copy":
+                cmd = ["copy", *rnd.choice([["--color"], [], ["--color", "--padding", "dense"]]), files[-1]]
+            else:
+                cmd = ["diff", *opts, *extra, *files]
+            r1 = run(["node", ref, *cmd])
+            r2 = run([ours, *cmd])
+        elif mode == "diff":
             r1 = run(["node", ref, "diff", *opts, *files])
             r2 = run([ours, "diff", *opts, *files])
         elif mode == "patch":

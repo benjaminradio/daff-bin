@@ -22,6 +22,7 @@ pub mod format;
 pub mod merge;
 pub mod mover;
 pub mod patch;
+pub mod render;
 pub mod table;
 pub mod unit;
 
@@ -32,5 +33,6 @@ pub use error::{Error, Result};
 pub use flags::Flags;
 pub use merge::Merger;
 pub use patch::HighlightPatch;
+pub use render::{DiffRender, TerminalDiffRender};
 pub use table::Table;
 pub use unit::{Ordering, Unit};
