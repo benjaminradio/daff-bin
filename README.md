@@ -8,7 +8,8 @@ included (tag `v0.1.0`; see [docs/QUIRKS.md](docs/QUIRKS.md)). Phase 2 fixes
 the bugs found by comparing it with the spec and with its own intent
 ([docs/BUGS.md](docs/BUGS.md), [docs/SPEC-ERRATA.md](docs/SPEC-ERRATA.md)); the
 fixes are on by default and `--reference-compat` restores the 1.4.2 behaviour.
-Phase 3 will add Excel (xlsx) and phase 4 SQLite.
+Phase 3 will expand and optimize daff, phase 4 adds Excel (xlsx) and phase 5
+SQLite.
 
 ```
 cargo build --release          # target/release/daff
@@ -30,9 +31,9 @@ daff git csv                   # use daff as git's diff/merge driver for *.csv
 | HTML (`render`, `--output-format html`) and ANSI colour output | done |
 | JSON (single and multi-table), NDJSON | done |
 | `daff git`, `--git` diff driver | done |
-| SQLite sources (`.sqlite`) | phase 4 |
+| SQLite sources (`.sqlite`) | phase 5 |
 | `--www` (open diff in a browser) | not yet |
-| xlsx | phase 3 |
+| xlsx | phase 4 |
 
 ## Layout
 
