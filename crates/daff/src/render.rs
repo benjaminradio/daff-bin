@@ -139,7 +139,8 @@ impl DiffRender {
             if tab.height() <= 1 {
                 continue;
             }
-            self.insert(&format!("<h3>{name}</h3>\n"));
+            let heading = if crate::compat::reference_compat() { name.to_string() } else { html_escape(name) };
+            self.insert(&format!("<h3>{heading}</h3>\n"));
             self.render(tab);
         }
         self
@@ -253,9 +254,28 @@ fn has_code(name: &str) -> bool {
     !code(name).is_empty()
 }
 
-/// Length in UTF-16 code units, as JavaScript counts string length.
+/// Width used to align columns: UTF-16 code units, as JavaScript counts
+/// string length, in reference mode; display columns otherwise (B-25).
+/// ANSI colour sequences take no space.
 fn js_len(s: &str) -> usize {
-    s.encode_utf16().count()
+    if crate::compat::reference_compat() {
+        return s.encode_utf16().count();
+    }
+    use unicode_width::UnicodeWidthChar;
+    let mut width = 0;
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if c == '\u{1b}' {
+            in_escape = true;
+        } else {
+            width += c.width().unwrap_or(0);
+        }
+    }
+    width
 }
 
 impl TerminalDiffRender {

@@ -24,32 +24,32 @@ The properties are checked by `scripts/prop_roundtrip.py` and
 
 | ID | Cat | Summary | Status |
 |----|-----|---------|--------|
-| B-01 | DATA | NDJSON with ragged rows is scrambled | open |
-| B-02 | DATA | `patch` corrupts tables with duplicate rows | open |
-| B-03 | DATA | `patch` misplaces moved rows when other rows are deleted or omitted | open |
-| B-04 | DATA | CSV rows longer than the first row lose cells | open |
-| B-05 | DATA | `trim_blank` drops a column that has data below the top rows | open |
-| B-06 | DATA/SPEC | `NULL`-like strings are not encoded (diff cells, CSV output) | open |
-| B-07 | DATA | Invalid UTF-8 is silently replaced by U+FFFD | open |
-| B-08 | DATA | `merge` silently drops edits to a row/column deleted on the other side | open |
-| B-09 | DATA | `merge` duplicates a row added identically on both sides | open |
-| B-10 | ROBUST | `patch` aborts (capacity overflow) when it deletes more than exists | open |
-| B-11 | SPEC | Cells of columns absent from a table are `NULL`, spec says blank | open |
-| B-12 | SPEC | Blank values of an added column are patched as null, not blank | open |
-| B-13 | SPEC | Schema tags are combined (`:(old)`, `:+++`), spec says not to | open |
-| B-14 | SPEC | One long separator (`-->`) is used on every row, spec says per row | open |
-| B-15 | DOC | `__hilite_diff__` action column of unordered diffs does not exist | open |
-| B-16 | INTENT | Cells with the text `null` or `undefined` are blank when matching rows | open |
-| B-17 | INTENT | `--ignore-epsilon` treats `12abc` and `12xyz` as equal numbers | open |
-| B-18 | INTENT | Duplicate header names make a data row look like the header | open |
-| B-19 | INTENT | Single-table JSON ignores `columns` as header; own JSON output unreadable | open |
-| B-20 | INTENT | A UTF-8 byte order mark ends up in the first column name | open |
-| B-21 | INTENT | Unknown `--id`, `--act` and `--ignore` values are silently accepted | open |
-| B-22 | INTENT | `merge` ignores `--id`/`--ignore` | open |
-| B-23 | INTENT | `--inplace` never works | open |
-| B-24 | INTENT | `patch` does not notice that a row is already present or has changed | open |
-| B-25 | INTENT | Terminal columns are aligned by UTF-16 length, not display width | open |
-| B-26 | INTENT | Table names are not escaped in HTML headings | open |
+| B-01 | DATA | NDJSON with ragged rows is scrambled | fixed |
+| B-02 | DATA | `patch` corrupts tables with duplicate rows | fixed |
+| B-03 | DATA | `patch` misplaces moved rows when other rows are deleted or omitted | fixed |
+| B-04 | DATA | CSV rows longer than the first row lose cells | fixed |
+| B-05 | DATA | `trim_blank` drops a column that has data below the top rows | fixed |
+| B-06 | DATA/SPEC | `NULL`-like strings are not encoded (diff cells, CSV output) | fixed |
+| B-07 | DATA | Invalid UTF-8 is silently replaced by U+FFFD | fixed |
+| B-08 | DATA | `merge` silently drops edits to a row/column deleted on the other side | fixed |
+| B-09 | DATA | `merge` duplicates a row added identically on both sides | fixed |
+| B-10 | ROBUST | `patch` aborts (capacity overflow) when it deletes more than exists | fixed |
+| B-11 | SPEC | Cells of columns absent from a table are `NULL`, spec says blank | fixed |
+| B-12 | SPEC | Blank values of an added column are patched as null, not blank | fixed |
+| B-13 | SPEC | Schema tags are combined (`:(old)`, `:+++`), spec says not to | not a bug: spec gap, see SPEC-ERRATA |
+| B-14 | SPEC | One long separator (`-->`) is used on every row, spec says per row | fixed |
+| B-15 | DOC | `__hilite_diff__` action column of unordered diffs does not exist | doc: see SPEC-ERRATA |
+| B-16 | INTENT | Cells with the text `null` or `undefined` are blank when matching rows | fixed |
+| B-17 | INTENT | `--ignore-epsilon` treats `12abc` and `12xyz` as equal numbers | fixed |
+| B-18 | INTENT | Duplicate header names make a data row look like the header | fixed |
+| B-19 | INTENT | Single-table JSON ignores `columns` as header; own JSON output unreadable | fixed |
+| B-20 | INTENT | A UTF-8 byte order mark ends up in the first column name | fixed |
+| B-21 | INTENT | Unknown `--id`, `--act` and `--ignore` values are silently accepted | fixed |
+| B-22 | INTENT | `merge` ignores `--id`/`--ignore` | fixed |
+| B-23 | INTENT | `--inplace` never works | fixed |
+| B-24 | INTENT | `patch` does not notice that a row is already present or has changed | deferred (needs design) |
+| B-25 | INTENT | Terminal columns are aligned by UTF-16 length, not display width | fixed |
+| B-26 | INTENT | Table names are not escaped in HTML headings | fixed |
 
 ## Details
 
@@ -154,3 +154,25 @@ value in the changed cell) silently applies it again.
 ### B-25 / B-26 cosmetics
 Terminal padding counts UTF-16 units (wide characters misalign). Table names
 in multi-table HTML are inserted into `<h3>` without escaping.
+
+## Notes on what changed
+
+- **B-13** is reclassified. A column that is moved *and* renamed (or moved
+  *and* inserted) has two things to say and the schema row has one cell, so
+  `:(old)` and `:+++` are necessary; the spec's "tags are not combined" rule
+  is about the weak tags of context rows. The bug was in `patch`, which
+  dropped the move of a renamed column (fixed as B-27 below).
+- **B-27** (found while fixing the above): `patch` ignored the `:` of a moved
+  and renamed column. Fixed.
+- **B-24** is deferred: applying a diff to a table that is not the one it was
+  made from is not detected. A `--check` mode would verify that every
+  matched row has the cell values the diff expects; that needs a design for
+  reporting mismatches.
+- **B-14** differs from the spec's example in one respect: the padding only
+  grows when the *row* has a collision, so other rows keep the plain `->`.
+- The fixed `patch` places rows omitted from a diff (`...`) by their source
+  neighbours, rebuilds the order from the diff, and matches duplicate rows one
+  by one. `--reference-compat` keeps the old algorithm.
+- Not addressed: blank-keyed rows in single-column tables cannot be matched
+  by content (the spec calls blank cells ambiguous), so patching such tables
+  can still go wrong. Use `--id` or add a key column.

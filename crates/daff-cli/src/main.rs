@@ -637,13 +637,23 @@ fn run(argv: Vec<String>) -> Res<u8> {
             }
         }
     }
+    let mut output = output;
     if inplace {
-        // The reference rejects --inplace unconditionally: it reports status 1
-        // without writing anything. See docs/QUIRKS.md.
-        if output.is_some() {
-            eprintln!("Please do not use --inplace when specifying an output.");
+        if daff::reference_compat() {
+            // The reference rejects --inplace unconditionally: it reports
+            // status 1 without writing anything (B-23).
+            if output.is_some() {
+                eprintln!("Please do not use --inplace when specifying an output.");
+            }
+            return Ok(1);
         }
-        return Ok(1);
+        if output.is_some() {
+            return Err("Please do not use --inplace when specifying an output.".into());
+        }
+        if !matches!(cmd.as_str(), "patch" | "merge") {
+            return Err("--inplace only applies to patch and merge".into());
+        }
+        output = Some(name.clone());
     }
     let output = output.unwrap_or_else(|| "-".into());
     match cmd.as_str() {

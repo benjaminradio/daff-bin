@@ -3,9 +3,12 @@
 A Rust implementation of [daff](https://github.com/paulfitz/daff), the tabular
 diff, patch and merge tool, as a single static binary and a library.
 
-Phase 1 (this phase) reproduces the reference implementation (daff 1.4.2)
-exactly, quirks included; see [docs/QUIRKS.md](docs/QUIRKS.md). Phase 2 adds
-Excel (xlsx) support.
+Phase 1 reproduced the reference implementation (daff 1.4.2) exactly, quirks
+included (tag `v0.1.0`; see [docs/QUIRKS.md](docs/QUIRKS.md)). Phase 2 fixes
+the bugs found by comparing it with the spec and with its own intent
+([docs/BUGS.md](docs/BUGS.md), [docs/SPEC-ERRATA.md](docs/SPEC-ERRATA.md)); the
+fixes are on by default and `--reference-compat` restores the 1.4.2 behaviour.
+Phase 3 will add Excel (xlsx) and phase 4 SQLite.
 
 ```
 cargo build --release          # target/release/daff
@@ -27,9 +30,9 @@ daff git csv                   # use daff as git's diff/merge driver for *.csv
 | HTML (`render`, `--output-format html`) and ANSI colour output | done |
 | JSON (single and multi-table), NDJSON | done |
 | `daff git`, `--git` diff driver | done |
-| SQLite sources (`.sqlite`) | not yet |
+| SQLite sources (`.sqlite`) | phase 4 |
 | `--www` (open diff in a browser) | not yet |
-| xlsx | phase 2 |
+| xlsx | phase 3 |
 
 ## Layout
 
@@ -45,4 +48,7 @@ daff git csv                   # use daff as git's diff/merge driver for *.csv
 
 `cargo test` runs unit and golden tests. `scripts/conformance.sh` installs the
 reference from npm (needs node and python3) and compares this implementation
-with it on random tables for every command and output format.
+with it (in `--reference-compat` mode) on random tables for every command and
+output format. `scripts/prop_roundtrip.py` checks the round-trip properties
+(`patch(a, diff(a, b)) == b`, `merge(a, a, b) == b`) and
+`scripts/fuzz_robust.py` looks for crashes.

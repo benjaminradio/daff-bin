@@ -35,7 +35,7 @@ pub use compat::{reference_compat, set_reference_compat};
 pub use diff::{DiffSummary, TableDiff};
 pub use error::{Error, Result};
 pub use flags::Flags;
-pub use merge::Merger;
+pub use merge::{ConflictInfo, ConflictKind, Merger};
 pub use patch::HighlightPatch;
 pub use render::{DiffRender, TerminalDiffRender};
 pub use table::{Table, TableMeta};

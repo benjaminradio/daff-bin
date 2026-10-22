@@ -708,9 +708,10 @@ impl CompareTable {
         }
     }
 
-    /// When both tables start with a complete header row and the headers share
-    /// a column name, that row is the header (duplicate names are matched in
-    /// order). The reference's guess can pick a data row instead (B-18).
+    /// When both tables start with a complete header row, one of them repeats a
+    /// column name and the headers share a name, that row is the header
+    /// (duplicate names are matched in order). The reference's guess can pick
+    /// a data row instead (B-18).
     fn align_columns_by_header(&self, align: &mut Alignment, a: &Rc<Table>, b: &Rc<Table>) -> bool {
         let full = |t: &Table| t.height() > 0 && t.width() > 0 && (0..t.width()).all(|x| !cell_text(t, x, 0).is_empty());
         if !full(a) || !full(b) {
@@ -724,7 +725,10 @@ impl CompareTable {
             m
         };
         let (na, nb) = (names(a), names(b));
-        if !na.keys().any(|k| nb.contains_key(k)) {
+        // Only needed when a header repeats a name; otherwise the data-driven
+        // matching below also detects renamed columns.
+        let has_dup = |m: &HashMap<String, Vec<usize>>| m.values().any(|v| v.len() > 1);
+        if !(has_dup(&na) || has_dup(&nb)) || !na.keys().any(|k| nb.contains_key(k)) {
             return false;
         }
         let mut seen: HashMap<&str, usize> = HashMap::new();

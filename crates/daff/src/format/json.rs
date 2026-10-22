@@ -36,16 +36,33 @@ fn field_count(v: &Value) -> usize {
 /// first row is treated as the header by the diff.
 pub fn table_from_json(json: &Value) -> Result<Option<Table>> {
     let Value::Object(entries) = json else { return Ok(None) };
+    if !crate::compat::reference_compat() {
+        if let Some(t) = sheet_table(entries) {
+            return Ok(Some(t));
+        }
+    }
     let mut output = None;
     for (_, t) in entries {
         let Some(Value::Array(columns)) = field(t, "columns").map(|c| c.into_owned()) else { continue };
         let Some(Value::Array(rows)) = field(t, "rows").map(|c| c.into_owned()) else { continue };
-        let mut table = Table::new(columns.len(), rows.len());
+        let compat = crate::compat::reference_compat();
+        // The header row is made from `columns` (the reference leaves it out,
+        // so the first data row becomes the header; B-19).
+        let offset = usize::from(!compat);
+        let mut table = Table::new(columns.len(), rows.len() + offset);
+        if !compat {
+            for (j, col) in columns.iter().enumerate() {
+                table.set_cell(j, 0, Cell::from_value(col.clone()).map(|c| Cell::Str(c.text().to_string())));
+            }
+        }
         let mut has_hash = false;
         let mut known = false;
         for (i, row) in rows.iter().enumerate() {
+            let i = i + offset;
+            let row_i = i - offset;
+            let _ = row_i;
             if !known {
-                has_hash = field_count(row) == columns.len();
+                has_hash = if compat { field_count(row) == columns.len() } else { matches!(row, Value::Object(_)) };
                 known = true;
             }
             for (j, col) in columns.iter().enumerate() {
@@ -130,6 +147,24 @@ pub fn tables_from_json(json: &Value, flags: &Flags) -> Result<Table> {
     Ok(t)
 }
 
+/// `{"sheet": [[...], ...]}`, the form `daff` itself writes, as a table.
+fn sheet_table(entries: &[(String, Value)]) -> Option<Table> {
+    let (_, Value::Array(rows)) = entries.iter().find(|(k, _)| k == "sheet")? else { return None };
+    if !rows.iter().all(|r| matches!(r, Value::Array(_))) {
+        return None;
+    }
+    let w = rows.iter().map(|r| if let Value::Array(a) = r { a.len() } else { 0 }).max().unwrap_or(0);
+    let mut t = Table::new(w, rows.len());
+    for (y, r) in rows.iter().enumerate() {
+        if let Value::Array(cells) = r {
+            for (x, c) in cells.iter().enumerate() {
+                t.set_cell(x, y, Cell::from_value(c.clone()));
+            }
+        }
+    }
+    Some(t)
+}
+
 pub fn parse_table(text: &str) -> Result<Option<Table>> {
     let json = parse_json(text).map_err(Error::Json)?;
     table_from_json(&json)
@@ -176,9 +211,42 @@ pub fn render_ndjson(t: &Table) -> String {
     txt
 }
 
+/// Read NDJSON first to last: columns are the keys in order of first
+/// appearance, and every value goes in its own column (the reference
+/// scrambles rows whose keys differ; B-01).
+fn parse_ndjson_fixed(text: &str) -> Result<Table> {
+    let mut columns: Vec<String> = Vec::new();
+    let mut rows: Vec<Vec<(String, Value)>> = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Value::Object(fields) = parse_json(line).map_err(Error::Json)? else {
+            return Err(Error::Json("each NDJSON line must be an object".into()));
+        };
+        for (k, _) in &fields {
+            if !columns.contains(k) {
+                columns.push(k.clone());
+            }
+        }
+        rows.push(fields);
+    }
+    let mut tab = Table::new(columns.len(), rows.len() + 1);
+    for (x, c) in columns.iter().enumerate() {
+        tab.set(x, 0, Some(c.clone()));
+    }
+    for (y, fields) in rows.into_iter().enumerate() {
+        for (k, v) in fields {
+            let x = columns.iter().position(|c| *c == k).unwrap();
+            tab.set_cell(x, y + 1, Cell::from_value(v));
+        }
+    }
+    Ok(tab)
+}
+
 /// `Ndjson.parse`: rows are added last to first, so columns appear in the
 /// order the last rows mention them.
 pub fn parse_ndjson(text: &str) -> Result<Table> {
+    if !crate::compat::reference_compat() {
+        return parse_ndjson_fixed(text);
+    }
     let mut tab = Table::new(0, 0);
     let rows: Vec<&str> = text.split('\n').collect();
     let mut h = rows.len();
@@ -231,7 +299,7 @@ mod tests {
 
     #[test]
     fn json_table_keeps_types() {
-        let t = parse_table(r#"{"t":{"columns":["a","b"],"rows":[{"a":"a","b":"b"},{"a":1,"b":null}]}}"#)
+        let t = parse_table(r#"{"t":{"columns":["a","b"],"rows":[{"a":1,"b":null}]}}"#)
             .unwrap()
             .unwrap();
         assert_eq!(t.get(0, 1), Some("1"));
