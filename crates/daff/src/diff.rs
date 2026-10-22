@@ -92,6 +92,24 @@ fn separator_for(t: &Table, t2: &Table, root: &str) -> String {
     sep
 }
 
+/// As `separator_for`, but only looking at the given rows (`(table, row)`).
+fn row_separator(rows: &[(&Table, isize)], root: &str) -> String {
+    let mut sep = root.to_string();
+    for &(t, y) in rows {
+        if y < 0 {
+            continue;
+        }
+        for x in 0..t.width() {
+            if let Some(txt) = t.get(x, y as usize) {
+                while txt.contains(&sep) {
+                    sep.insert(0, '-');
+                }
+            }
+        }
+    }
+    sep
+}
+
 fn is_reordered(m: &HashMap<usize, Unit>, ct: usize) -> bool {
     let (mut l, mut r) = (-1isize, -1isize);
     for i in 0..ct {
@@ -183,6 +201,13 @@ fn count_active(active: &[i32]) -> usize {
 
 /// JavaScript-style `parseFloat`: parses the longest numeric prefix.
 fn parse_float(s: &str) -> Option<f64> {
+    if !crate::compat::reference_compat() {
+        // Only text that is entirely a number counts (B-17).
+        let t = s.trim();
+        let ok = t.bytes().next().is_some_and(|c| c.is_ascii_digit() || matches!(c, b'+' | b'-' | b'.'))
+            && !t.contains(|c: char| c.is_alphabetic() && !matches!(c, 'e' | 'E'));
+        return if ok { t.parse::<f64>().ok().filter(|v| v.is_finite()) } else { None };
+    }
     let s = s.trim_start();
     let b = s.as_bytes();
     let mut i = 0;
@@ -845,6 +870,11 @@ impl<'a> TableDiff<'a> {
 
     fn scan_row(&mut self, unit: Unit, output: &mut Table, at: usize, i: usize, out: usize) {
         let mut row_update = false;
+        if !crate::compat::reference_compat() {
+            // The padding of `->` is chosen per row (spec; B-14).
+            self.sep.clear();
+            self.conflict_sep.clear();
+        }
         for j in 0..self.column_units.len() {
             let cunit = self.column_units[j];
             let (mut pp, mut ll, mut rr): (Option<Cell>, Option<Cell>, Option<Cell>) = (None, None, None);
@@ -910,6 +940,15 @@ impl<'a> TableDiff<'a> {
             }
 
             let mut cell: Option<Cell> = dd.clone();
+            // A column that does not exist in the table a row comes from is
+            // left blank, not NULL (spec; B-11).
+            if cell.is_none()
+                && !(have_pp || have_ll || have_rr)
+                && self.builder == Builder::Flat
+                && !crate::compat::reference_compat()
+            {
+                cell = Some(Cell::Str(String::new()));
+            }
             if have_dd_to && ((dd.is_some() && self.allow_update) || self.allow_column) {
                 if !row_update {
                     if out == 0 {
@@ -922,6 +961,9 @@ impl<'a> TableDiff<'a> {
                 }
                 if self.sep.is_empty() {
                     self.sep = match self.builder {
+                        Builder::Flat if !crate::compat::reference_compat() => {
+                            row_separator(&[(&self.p, unit.p), (&self.a, unit.l), (&self.b, unit.r)], "->")
+                        }
                         Builder::Flat => separator_for(&self.a, &self.b, "->"),
                         Builder::Nested => "->".into(),
                     };

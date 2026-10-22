@@ -370,6 +370,9 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
             "--all-columns" => o.flags.show_unchanged_columns = true,
             "--act" => {
                 let act = value(&mut it, &tag)?;
+                if !daff::reference_compat() && !["update", "insert", "delete", "column"].contains(&act.as_str()) {
+                    return Err(format!("--act expects update, insert, delete or column, not '{act}'"));
+                }
                 // `acts[x] = true` on a fresh map, as the reference does
                 o.flags.acts.get_or_insert_with(Default::default).insert(act, true);
             }
@@ -617,6 +620,21 @@ fn run(argv: Vec<String>) -> Res<u8> {
             b = Some(st.load_table(&rest[offset + 1], &flags)?);
         } else {
             output = Some(rest[offset + 1].clone());
+        }
+    }
+    if !daff::reference_compat() && matches!(cmd.as_str(), "diff" | "merge") {
+        // Column names given to --id / --ignore must exist (B-21).
+        let tables: Vec<&Table> = parent.iter().chain(std::iter::once(&a)).chain(b.iter()).collect();
+        let nested = tables.iter().any(|t| t.meta().is_some_and(|m| m.nested));
+        let known = |n: &str| tables.iter().any(|t| (0..t.width()).any(|x| t.get(x, 0) == Some(n)));
+        if !nested {
+            for (opt, names) in [("--id", &flags.ids), ("--ignore", &flags.columns_to_ignore)] {
+                for n in names.iter().flatten() {
+                    if !known(n) {
+                        return Err(format!("{opt} column '{n}' is not in the header of any input table"));
+                    }
+                }
+            }
         }
     }
     if inplace {

@@ -309,7 +309,8 @@ impl Index {
             if k > 0 {
                 wide.push_str(" // ");
             }
-            if txt.is_empty() || txt == "null" || txt == "undefined" {
+            // "null" and "undefined" are leftovers of JavaScript string conversion (B-16)
+            if txt.is_empty() || (crate::compat::reference_compat() && (txt == "null" || txt == "undefined")) {
                 continue;
             }
             wide.push_str(&txt);
@@ -707,8 +708,53 @@ impl CompareTable {
         }
     }
 
+    /// When both tables start with a complete header row and the headers share
+    /// a column name, that row is the header (duplicate names are matched in
+    /// order). The reference's guess can pick a data row instead (B-18).
+    fn align_columns_by_header(&self, align: &mut Alignment, a: &Rc<Table>, b: &Rc<Table>) -> bool {
+        let full = |t: &Table| t.height() > 0 && t.width() > 0 && (0..t.width()).all(|x| !cell_text(t, x, 0).is_empty());
+        if !full(a) || !full(b) {
+            return false;
+        }
+        let names = |t: &Table| -> HashMap<String, Vec<usize>> {
+            let mut m: HashMap<String, Vec<usize>> = HashMap::new();
+            for x in 0..t.width() {
+                m.entry(cell_text(t, x, 0).to_string()).or_default().push(x);
+            }
+            m
+        };
+        let (na, nb) = (names(a), names(b));
+        if !na.keys().any(|k| nb.contains_key(k)) {
+            return false;
+        }
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let mut used_b = vec![false; b.width()];
+        for ca in 0..a.width() {
+            let name = cell_text(a, ca, 0);
+            let k = seen.entry(name).or_insert(0);
+            match nb.get(name).and_then(|v| v.get(*k)) {
+                Some(&cb) => {
+                    align.link(ca as isize, cb as isize);
+                    used_b[cb] = true;
+                }
+                None => align.link(ca as isize, -1),
+            }
+            *k += 1;
+        }
+        for (cb, used) in used_b.iter().enumerate() {
+            if !used {
+                align.link(-1, cb as isize);
+            }
+        }
+        align.headers(0, 0);
+        true
+    }
+
     fn align_columns(&self, align: &mut Alignment, a: &Rc<Table>, b: &Rc<Table>) {
         align.tables(a.clone(), b.clone());
+        if !crate::compat::reference_compat() && self.align_columns_by_header(align, a, b) {
+            return;
+        }
         const SLOP: usize = 5;
 
         // Column key -> column index; -1 marks a duplicated key.
