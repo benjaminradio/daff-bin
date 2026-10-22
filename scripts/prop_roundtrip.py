@@ -31,6 +31,10 @@ def write(path, rows):
 UNIQUE = pool.startswith("unique")
 counter = [0]
 
+def fresh_name(prefix):
+    counter[0] += 1
+    return "%s%d" % (prefix, counter[0])
+
 def fresh():
     counter[0] += 1
     return "id%d" % counter[0]
@@ -63,12 +67,12 @@ def mutate(rows, kinds):
         elif op == "addcol":
             p = rnd.randint(0, len(rows[0]))
             for k, r in enumerate(rows):
-                r.insert(p, "new%d" % rnd.randint(0, 9) if k == 0 else rnd.choice(WORDS))
+                r.insert(p, fresh_name("new") if k == 0 else rnd.choice(WORDS))
         elif op == "delcol" and len(rows[0]) > 2:
             p = rnd.randrange(len(rows[0]))
             for r in rows: del r[p]
         elif op == "rename":
-            rows[0][rnd.randrange(len(rows[0]))] = "ren%d" % rnd.randint(0, 9)
+            rows[0][rnd.randrange(len(rows[0]))] = fresh_name("ren")
         elif op == "movecol" and len(rows[0]) > 1:
             i, j = rnd.sample(range(len(rows[0])), 2)
             for r in rows: r.insert(j, r.pop(i))
@@ -77,9 +81,7 @@ def mutate(rows, kinds):
 import csv, io
 
 def norm(txt):
-    """With NULLEQ=1, treat NULL and the empty string as the same value."""
-    if not os.environ.get("NULLEQ"):
-        return txt
+    """Treat NULL and the empty string as the same value."""
     return [["" if c == "NULL" else c for c in r] for r in csv.reader(io.StringIO(txt))]
 
 def run(*cmd):
@@ -107,7 +109,10 @@ with tempfile.TemporaryDirectory() as d:
             open(dp, "w").write(d_txt)
             rc, p_txt, _ = run("patch", a, dp)
             want = run("trim", b)[1]
-            if norm(p_txt) != norm(want):
+            # Without --all the diff cannot show rows it omits, so values of an
+            # added column in those rows are unknowable: null and blank match.
+            eq = norm(p_txt) == norm(want) if (os.environ.get("NULLEQ") or "--all" not in opts) and kind != "rows" else p_txt == want
+            if not eq:
                 key = ("patch", kind, " ".join(opts))
                 fails.setdefault(key, []).append((read(a), read(b), d_txt, p_txt, want))
         rc, m_txt, _ = run("merge", a, a, b)

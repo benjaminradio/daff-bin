@@ -1,5 +1,6 @@
-//! Golden tests; expected outputs were produced by the reference daff 1.4.2
-//! (`scripts/fuzz_oracle.py` compares against it on random inputs).
+//! Golden tests of the default (fixed) behaviour. Behaviour that matches the
+//! reference exactly is in `reference_compat.rs`; expected outputs there come
+//! from daff 1.4.2.
 use daff::format::csv::Csv;
 use daff::{compare_tables3, Flags, Table, TableDiff};
 
@@ -26,7 +27,7 @@ fn basic_update_insert_delete_and_column_add() {
     );
     assert_eq!(
         got,
-        "!,,,+++\n@@,name,age,x\n+,ann,3,1\n->,bob,4->5,2\n+++,dan,9,3\n---,cat,5,NULL\n"
+        "!,,,+++\n@@,name,age,x\n+,ann,3,1\n->,bob,4->5,2\n+++,dan,9,3\n---,cat,5,\n"
     );
 }
 
@@ -44,7 +45,7 @@ fn three_way_column_reorder_matches_reference() {
         "c0,c1,new4,c2\n",
         Flags::default(),
     );
-    assert_eq!(got, "!,,+++,,,,...\n@@,c0,new4,c2,c1,ren7,...\n---,,NULL,NULL,b,NULL,...\n");
+    assert_eq!(got, "!,,+++,,,,...\n@@,c0,new4,c2,c1,ren7,...\n---,,,NULL,b,NULL,...\n");
 }
 
 #[test]

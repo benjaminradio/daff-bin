@@ -90,6 +90,26 @@ fn sort_mods(a: &PatchUnit, b: &PatchUnit) -> i64 {
     ord(a.patch_row.cmp(&b.patch_row))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Context,
+    Moved,
+    Plus,
+    Update,
+    Add,
+    Delete,
+    Gap,
+}
+
+/// One row of the patch, with the source row it was matched to.
+#[derive(Debug, Clone)]
+struct Item {
+    patch_row: isize,
+    kind: Kind,
+    source_row: isize,
+    dest_row: isize,
+}
+
 /// Applies a highlighter-format diff to a table.
 pub struct HighlightPatch<'a> {
     source: &'a mut Table,
@@ -118,6 +138,10 @@ pub struct HighlightPatch<'a> {
     have_dropped_columns: bool,
     preamble_row: isize,
     finished_columns: bool,
+    // Row bookkeeping of the fixed algorithm (see `finish_rows_by_items`).
+    items: Vec<Item>,
+    used_rows: std::collections::HashSet<usize>,
+    last_matched: isize,
 }
 
 /// Lets the index query rows of the patch as if they were rows of the source.
@@ -160,6 +184,9 @@ impl<'a> HighlightPatch<'a> {
             have_dropped_columns: false,
             preamble_row: 0,
             finished_columns: false,
+            items: Vec::new(),
+            used_rows: Default::default(),
+            last_matched: -1,
         }
     }
 
@@ -185,6 +212,9 @@ impl<'a> HighlightPatch<'a> {
         self.have_dropped_columns = false;
         self.preamble_row = 0;
         self.finished_columns = false;
+        self.items.clear();
+        self.used_rows.clear();
+        self.last_matched = -1;
 
         let patch = self.patch;
         if patch.width() < 2 || patch.height() < 1 {
@@ -258,7 +288,12 @@ impl<'a> HighlightPatch<'a> {
         } else if code == "@@" {
             self.preamble_row = r;
             self.apply_header();
-            self.apply_action("@@");
+            if crate::compat::reference_compat() {
+                self.apply_action("@@");
+            } else {
+                // index the source before the columns are changed
+                self.need_source_index();
+            }
             done = true;
         } else if code == "!" {
             self.preamble_row = r;
@@ -270,7 +305,22 @@ impl<'a> HighlightPatch<'a> {
             self.need_source_columns();
             done = true;
         }
-        if !done {
+        if !done && !crate::compat::reference_compat() {
+            self.finish_columns();
+            let kind = match code.as_str() {
+                "+++" => Some(Kind::Add),
+                "---" => Some(Kind::Delete),
+                "+" => Some(Kind::Plus),
+                ":" => Some(Kind::Moved),
+                "..." => Some(Kind::Gap),
+                "" => Some(Kind::Context),
+                c if c.contains("->") => Some(Kind::Update),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                self.push_item(kind);
+            }
+        } else if !done {
             self.finish_columns();
             if code == "+++" || code == "---" || code == "+" || code == ":" {
                 self.apply_action(&code);
@@ -323,7 +373,11 @@ impl<'a> HighlightPatch<'a> {
                     let prev_name: String = m.chars().skip(1).take(m.chars().count().saturating_sub(2)).collect();
                     self.header_pre.insert(prev_name.clone(), i);
                     self.header_post.insert(name.clone(), i);
-                    self.header_rename.insert(prev_name, name);
+                    self.header_rename.insert(prev_name, name.clone());
+                    if mv && !crate::compat::reference_compat() {
+                        // a moved *and* renamed column is still a moved column (B-27)
+                        self.header_move.get_or_insert_with(HashMap::new).insert(name, true);
+                    }
                     continue;
                 }
             }
@@ -338,8 +392,58 @@ impl<'a> HighlightPatch<'a> {
             }
         }
         if self.source.height() == 0 {
-            self.apply_action("+++");
+            if crate::compat::reference_compat() {
+                self.apply_action("+++");
+            } else {
+                // an empty table: the header row itself is inserted
+                self.push_item(Kind::Add);
+            }
         }
+    }
+
+    fn push_item(&mut self, kind: Kind) {
+        let source_row = match kind {
+            Kind::Context | Kind::Moved | Kind::Plus | Kind::Update | Kind::Delete => self.match_row(kind),
+            Kind::Add | Kind::Gap => -1,
+        };
+        self.items.push(Item { patch_row: self.current_row, kind, source_row, dest_row: -1 });
+    }
+
+    /// Find the source row a patch row describes, by content. Rows that were
+    /// already matched are not offered again, so duplicate rows are matched
+    /// one by one in order (B-02).
+    fn match_row(&mut self, kind: Kind) -> isize {
+        self.need_source_index();
+        let indexes = self.indexes.take().unwrap_or_default();
+        let mut result: isize = -1;
+        let mut ambiguous: Vec<usize> = Vec::new();
+        for idx in &indexes {
+            let m = idx.query_by_content(&PatchRow(self));
+            if m.spot_a == 0 {
+                continue;
+            }
+            let unused: Vec<usize> = m.item_a.iter().copied().filter(|r| !self.used_rows.contains(r)).collect();
+            if m.spot_a == 1 {
+                if let Some(&r) = unused.first() {
+                    result = r as isize;
+                    break;
+                }
+            } else if !unused.is_empty() {
+                ambiguous = unused;
+            }
+        }
+        if result < 0 && !ambiguous.is_empty() {
+            let after = ambiguous.iter().copied().find(|&r| r as isize > self.last_matched);
+            result = after.unwrap_or(ambiguous[0]) as isize;
+        }
+        self.indexes = Some(indexes);
+        if result >= 0 {
+            self.used_rows.insert(result as usize);
+            if kind != Kind::Moved {
+                self.last_matched = result;
+            }
+        }
+        result
     }
 
     fn look_up(&mut self, del: isize) -> isize {
@@ -567,7 +671,169 @@ impl<'a> HighlightPatch<'a> {
         fate.iter().map(|&f| usize::try_from(f).ok()).collect()
     }
 
+    /// Apply the row changes. Rows of the source are kept in their order
+    /// except where the patch moves them; rows the patch does not mention
+    /// (omitted as `...`) stay with their neighbours. Rewritten from the
+    /// reference algorithm, which mishandled duplicate rows and moves (B-02,
+    /// B-03, B-12).
+    fn finish_rows_by_items(&mut self) {
+        if self.source.width() == 0 {
+            if self.source.height() != 0 {
+                self.source.resize(0, 0);
+            }
+            return;
+        }
+        let n = self.source.height();
+        let items = self.items.clone();
+        // Rows that anchor the omitted rows: matched, not moved, not deleted (the
+        // position of a deleted row in the diff is unreliable once rows move).
+        let anchors: Vec<(usize, usize)> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.source_row >= 0 && !matches!(it.kind, Kind::Moved | Kind::Delete))
+            .map(|(i, it)| (i, it.source_row as usize))
+            .collect();
+        let mut by_source = anchors.clone();
+        by_source.sort_by_key(|&(_, s)| s);
+        let mut anchor_items: Vec<usize> = anchors.iter().map(|&(i, _)| i).collect();
+        anchor_items.sort_unstable();
+        let mut gap_rows: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut after: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut lead: Vec<usize> = Vec::new();
+        for u in 1..n {
+            if self.used_rows.contains(&u) {
+                continue;
+            }
+            let pos = by_source.partition_point(|&(_, s)| s < u);
+            let k = pos.checked_sub(1).map(|p| by_source[p].0);
+            let lo = k.map_or(0, |k| k + 1);
+            let hi = anchor_items.get(anchor_items.partition_point(|&i| i < lo)).copied().unwrap_or(items.len());
+            let gap = (lo..hi).find(|&i| items[i].kind == Kind::Gap);
+            match (gap, k) {
+                (Some(g), _) => gap_rows.entry(g).or_default().push(u),
+                (None, None) => lead.push(u),
+                (None, Some(k)) => after.entry(if hi > lo { hi - 1 } else { k }).or_default().push(u),
+            }
+        }
+        enum Out {
+            Src(usize),
+            Item(usize),
+        }
+        let mut out: Vec<Out> = lead.into_iter().map(Out::Src).collect();
+        for (i, it) in items.iter().enumerate() {
+            match it.kind {
+                Kind::Add => out.push(Out::Item(i)),
+                Kind::Context | Kind::Moved | Kind::Plus | Kind::Update => {
+                    if it.source_row >= 0 {
+                        out.push(Out::Src(it.source_row as usize));
+                    }
+                }
+                Kind::Delete => {}
+                Kind::Gap => out.extend(gap_rows.remove(&i).unwrap_or_default().into_iter().map(Out::Src)),
+            }
+            out.extend(after.remove(&i).unwrap_or_default().into_iter().map(Out::Src));
+        }
+        let mut fate: Vec<isize> = vec![-1; n];
+        let mut pos: isize = if n == 0 { 0 } else { 1 };
+        if n > 0 {
+            fate[0] = 0;
+        }
+        let mut items = items;
+        let item_of_source: HashMap<usize, usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.source_row >= 0 && it.kind != Kind::Delete)
+            .map(|(i, it)| (it.source_row as usize, i))
+            .collect();
+        for o in &out {
+            match o {
+                Out::Src(s) => {
+                    fate[*s] = pos;
+                    if let Some(&i) = item_of_source.get(s) {
+                        items[i].dest_row = pos;
+                    }
+                }
+                Out::Item(i) => items[*i].dest_row = pos,
+            }
+            pos += 1;
+        }
+        self.source.insert_or_delete_rows(&Self::fate_to_table(&fate), pos as usize);
+        self.need_dest_columns();
+        let pidc = self.patch_in_dest_col.clone().unwrap();
+        for it in &items {
+            if it.dest_row < 0 {
+                continue;
+            }
+            match it.kind {
+                Kind::Add => {
+                    for &c in self.header_post.values() {
+                        if let Some(&offset) = pidc.get(&c) {
+                            if offset >= 0 {
+                                let d = self.patch.get_cell(c, it.patch_row as usize).cloned();
+                                self.source.set_cell(offset as usize, it.dest_row as usize, d);
+                            }
+                        }
+                    }
+                }
+                Kind::Update => {
+                    self.current_row = it.patch_row;
+                    self.check_act();
+                    if !self.row_info.updated {
+                        continue;
+                    }
+                    let vrow = self.row_info.value.clone().unwrap_or_default();
+                    for &c in self.header_pre.values() {
+                        let txt = self.patch.get(c, it.patch_row as usize).unwrap_or("").to_string();
+                        let cell = examine_cell(0, 0, Some(&txt), "", &vrow, 0);
+                        if !cell.updated || cell.conflicted {
+                            continue;
+                        }
+                        let d = Csv::parse_cell(cell.rvalue.as_deref());
+                        if let Some(&offset) = pidc.get(&c) {
+                            if offset >= 0 {
+                                self.source.set(offset as usize, it.dest_row as usize, d);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // New columns: values come from the rows the patch shows; blank in the
+        // patch means the blank string, and so does a row it does not show.
+        self.mods = items
+            .iter()
+            .filter(|it| it.dest_row >= 0 && it.kind != Kind::Gap)
+            .map(|it| {
+                let mut m = PatchUnit::new();
+                m.patch_row = it.patch_row;
+                m.dest_row = it.dest_row;
+                m
+            })
+            .collect();
+        self.fill_in_new_columns();
+        let covered: std::collections::HashSet<isize> = self.mods.iter().map(|m| m.dest_row).collect();
+        for cmod in &self.cmods {
+            if cmod.add && !cmod.rem {
+                for y in 1..self.source.height() {
+                    if !covered.contains(&(y as isize)) && self.source.get_cell(cmod.dest_row as usize, y).is_none() {
+                        self.source.set(cmod.dest_row as usize, y, Some(""));
+                    }
+                }
+            }
+        }
+        for i in 0..self.source.width() {
+            let name = self.source.get(i, 0).unwrap_or("").to_string();
+            if let Some(next) = self.header_rename.get(&name).cloned() {
+                self.source.set(i, 0, Some(next));
+            }
+        }
+    }
+
     fn finish_rows(&mut self) {
+        if !crate::compat::reference_compat() {
+            return self.finish_rows_by_items();
+        }
         if self.source.width() == 0 {
             if self.source.height() != 0 {
                 self.source.resize(0, 0);
