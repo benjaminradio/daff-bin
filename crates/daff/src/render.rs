@@ -123,6 +123,28 @@ impl DiffRender {
         self
     }
 
+    /// Render the tables of a nested diff: the base table, then each nested
+    /// table under a heading (`renderTables`).
+    pub fn render_tables(&mut self, tabs: &crate::Tables) -> &mut Self {
+        let order = tabs.order();
+        let mut start = 0;
+        if order.len() <= 1 || tabs.has_ins_del() {
+            if let Some(t) = tabs.one() {
+                self.render(t);
+            }
+            start = 1;
+        }
+        for name in order.iter().skip(start) {
+            let Some(tab) = tabs.get(name) else { continue };
+            if tab.height() <= 1 {
+                continue;
+            }
+            self.insert(&format!("<h3>{name}</h3>\n"));
+            self.render(tab);
+        }
+        self
+    }
+
     pub fn html(&self) -> String {
         self.out.concat()
     }

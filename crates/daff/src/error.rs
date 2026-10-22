@@ -6,6 +6,8 @@ pub enum Error {
     Csv(#[from] csv::Error),
     #[error("{0}")]
     Json(String),
+    #[error("{0}")]
+    Nested(String),
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
     #[error("not implemented: {0}")]

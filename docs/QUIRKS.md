@@ -180,6 +180,24 @@ default stays byte-compatible.
     (`s.split is not a function`). The port does not try to reproduce the
     crash.
 
+## Multi-table JSON
+
+38. **Format.** `{"names": [...], "tables": {name: {"columns", "rows"}}}`.
+    Unlike the single-table form (quirk 29) the nested tables *do* get their
+    column names as a header row. `--table NAME` (repeatable) limits which
+    tables are read. Each table is compared as a cell of a two-column
+    `name`/`table` base table; nested cells are shown as `[a.name]`/`[b.name]`
+    (or `[name]` when added/removed) and each nested table gets its own
+    section: `name`, a line of `=` the same length, then the diff, separated
+    by blank lines. The base table is only printed when a table was added or
+    removed. (`diff.rs: check_nesting`, `daff-cli: State::save_tables`)
+39. **Added or removed tables crash the reference** (it dereferences the
+    missing table) and so does `copy` of a multi-table file. The port exits
+    with status 1 and a message instead.
+40. **Nested tables are never marked identical**, so a table without changes
+    still gets a section with just its header row.
+    (`Alignment::mark_as_identical` is only used by the unported SQL path.)
+
 ## Deliberate deviations
 
 These are the only places where the port intentionally differs from the

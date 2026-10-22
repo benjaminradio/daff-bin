@@ -3,10 +3,10 @@
 //! `diff`/`copy` are implied by file names, and formats are picked from file
 //! extensions.
 use daff::format::csv::Csv;
-use daff::format::json::{parse_ndjson, render_json, render_ndjson, table_from_json};
+use daff::format::json::{parse_ndjson, render_json, render_ndjson, table_from_json, tables_from_json};
 use daff::value::parse_json;
 use daff::{
-    compare_tables3, DiffRender, Flags, HighlightPatch, Merger, Table, TableDiff, TerminalDiffRender,
+    compare_tables3, DiffRender, Flags, HighlightPatch, Merger, Table, TableDiff, Tables, TerminalDiffRender,
 };
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
@@ -90,7 +90,7 @@ impl State {
         format!("{what} is not supported yet")
     }
 
-    fn load_table(&mut self, name: &str) -> Res<Table> {
+    fn load_table(&mut self, name: &str, flags: &Flags) -> Res<Table> {
         let ext = self.check_format(Some(name));
         if ext == "sqlite" {
             return Err(self.unsupported("format 'sqlite'"));
@@ -108,7 +108,7 @@ impl State {
             match parsed {
                 Ok(json) => {
                     if matches!(&json, daff::Value::Object(f) if f.iter().any(|(k, v)| k == "tables" && !matches!(v, daff::Value::Null))) {
-                        return Err(self.unsupported("JSON files with multiple tables"));
+                        return tables_from_json(&json, flags).map_err(|e| e.to_string());
                     }
                     match table_from_json(&json).map_err(|e| e.to_string())? {
                         Some(t) => return Ok(t),
@@ -221,7 +221,7 @@ impl State {
         use_color
     }
 
-    fn save_tables(&mut self, flags: &Flags, name: &str, t: &Table, use_color: bool, is_diff: bool) -> Res<()> {
+    fn save_tables(&mut self, flags: &Flags, name: &str, os: &Tables, use_color: bool, is_diff: bool) -> Res<()> {
         if self.output_format != "copy" {
             let f = self.output_format.clone();
             self.set_format(&f);
@@ -229,7 +229,38 @@ impl State {
         self.check_format(Some(name));
         let render = use_color
             .then(|| TerminalDiffRender::new(Some(flags), self.delim_preference.as_deref(), is_diff));
-        self.save_table(flags, name, t, render.as_ref())
+        let order = os.order();
+        let one = os.one().ok_or("no table to write")?;
+        if order.len() == 1 {
+            return self.save_table(flags, name, one, render.as_ref());
+        }
+        if matches!(self.format_preference.as_deref(), Some("html") | Some("www")) {
+            let mut renderer = DiffRender::new();
+            renderer.use_pretty_arrows(flags.use_glyphs);
+            renderer.quote_html(flags.quote_html);
+            renderer.render_tables(os);
+            return self.apply_renderer(name, renderer);
+        }
+        let mut txt = String::new();
+        let mut need_blank = false;
+        if os.has_ins_del() {
+            txt += &self.encode_table(flags, name, one, render.as_ref())?.unwrap_or_else(|| "null".into());
+            need_blank = true;
+        }
+        for n in order.iter().skip(1) {
+            if let Some(t) = os.get(n) {
+                if need_blank {
+                    txt.push('\n');
+                }
+                need_blank = true;
+                txt += n;
+                txt.push('\n');
+                txt += &"=".repeat(n.encode_utf16().count());
+                txt.push('\n');
+                txt += &self.encode_table(flags, name, t, render.as_ref())?.unwrap_or_else(|| "null".into());
+            }
+        }
+        self.save_text(name, &txt)
     }
 }
 
@@ -551,17 +582,17 @@ fn run(argv: Vec<String>) -> Res<u8> {
     let mut offset = 0;
     let parent = if rest.len() >= 3 {
         offset = 1;
-        Some(st.load_table(&rest[0])?)
+        Some(st.load_table(&rest[0], &flags)?)
     } else {
         None
     };
     let name = rest.get(offset).ok_or("expected a file name")?.clone();
-    let mut a = st.load_table(&name)?;
+    let mut a = st.load_table(&name, &flags)?;
     let mut b = None;
     let mut output = output;
     if rest.len() > offset + 1 {
         if cmd != "copy" {
-            b = Some(st.load_table(&rest[offset + 1])?);
+            b = Some(st.load_table(&rest[offset + 1], &flags)?);
         } else {
             output = Some(rest[offset + 1].clone());
         }
@@ -587,17 +618,22 @@ fn run(argv: Vec<String>) -> Res<u8> {
             flags.allow_nested_cells = st.nested_output;
             let align = compare_tables3(parent.as_ref(), &a, &b, Some(&flags)).align();
             let mut td = TableDiff::new(&align, flags.clone());
-            let out = td.highlight();
+            let os = td.hilite_with_nesting().map_err(|e| e.to_string())?;
             let color = st.use_color(&flags, &output);
-            st.save_tables(&flags, &output, &out, color, true)?;
+            st.save_tables(&flags, &output, &os, color, true)?;
             if fail_if_diff && td.summary().different {
                 return Ok(1);
             }
         }
         "trim" => st.save_table(&flags, &output, &a, None)?,
         "copy" => {
+            if a.meta().is_some_and(|m| m.nested) {
+                return Err("cannot copy a multi-table JSON file".into());
+            }
+            let mut os = Tables::new();
+            *os.add("untitled") = a;
             let color = st.use_color(&flags, &output);
-            st.save_tables(&flags, &output, &a, color, false)?
+            st.save_tables(&flags, &output, &os, color, false)?
         }
         "render" => st.render_table(&flags, &output, &a)?,
         "patch" => {

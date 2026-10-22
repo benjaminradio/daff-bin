@@ -54,9 +54,57 @@ def run(cmd):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
     return p.returncode, p.stdout
 
+def multi(names_a, names_b):
+    """Two multi-table files; tables with the same name are related."""
+    def tbl(cols, nrows):
+        return {"columns": cols, "rows": [{c: val() for c in cols} for _ in range(nrows)]}
+    shared = {n: ["c%d" % i for i in range(rnd.randint(1, 4))] for n in set(names_a) | set(names_b)}
+    def side(names, other=None):
+        tabs = {}
+        for n in names:
+            cols = list(shared[n])
+            if other and n in other and rnd.random() < 0.7:
+                src = other[n]
+                rows = [dict(r) for r in src["rows"]]
+                for _ in range(rnd.randint(0, 3)):
+                    if rows and rnd.random() < 0.5:
+                        rows[rnd.randrange(len(rows))][rnd.choice(cols)] = val()
+                    elif rows and rnd.random() < 0.5:
+                        del rows[rnd.randrange(len(rows))]
+                    else:
+                        rows.insert(rnd.randrange(len(rows) + 1), {c: val() for c in cols})
+                tabs[n] = {"columns": cols, "rows": rows}
+            else:
+                tabs[n] = tbl(cols, rnd.randint(0, 4))
+        return tabs
+    ta = side(names_a)
+    tb = side(names_b, ta)
+    return ({"names": names_a, "tables": ta}, {"names": names_b, "tables": tb})
+
 bad = 0
 with tempfile.TemporaryDirectory() as d:
     for i in range(n):
+        if rnd.random() < 0.35:
+            pool = ["a", "b", "c", "d"]
+            names_a = rnd.sample(pool, rnd.randint(1, 3))
+            names_b = names_a if rnd.random() < 0.8 else rnd.sample(pool, rnd.randint(1, 3))
+            ja, jb = multi(names_a, names_b)
+            a, b = os.path.join(d, "a.json"), os.path.join(d, "b.json")
+            json.dump(ja, open(a, "w"), ensure_ascii=False)
+            json.dump(jb, open(b, "w"), ensure_ascii=False)
+            cmd = rnd.choice([
+                ["diff", a, b], ["diff", "--output-format", "csv", a, b], ["diff", "--output-format", "ndjson", a, b],
+                ["diff", "--all", a, b], ["diff", "--table", rnd.choice(pool), a, b], ["diff", "--index", a, b],
+                ["diff", "--id", "c0", a, b], ["diff", "--output-format", "csv", "--ordered", a, b],
+            ])
+            r1, r2 = run(["node", ref, *cmd]), run([ours, *cmd])
+            if r1 != r2:
+                bad += 1
+                if bad <= 2:
+                    print("MISMATCH", cmd)
+                    print(open(a).read(), "---", open(b).read())
+                    print("reference:", r1[0], r1[1][:1500], "\nours:", r2[0], r2[1][:1500])
+            continue
         cols, rows = table(rnd.randint(1, 5), rnd.randint(1, 7))
         cols2, rows2 = mutate(cols, rows)
         kind = rnd.choice(["json", "ndjson"])

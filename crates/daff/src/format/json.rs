@@ -1,7 +1,8 @@
 //! JSON and NDJSON tables, ported from `Coopy.jsonToTable`, `Coopy.jsonify`
 //! and `coopy.Ndjson`.
 use crate::value::{parse_json, Cell, Value};
-use crate::{Error, Result, Table};
+use crate::{Error, Flags, Result, Table, TableMeta};
+use std::rc::Rc;
 
 fn field<'a>(v: &'a Value, name: &str) -> Option<std::borrow::Cow<'a, Value>> {
     use std::borrow::Cow;
@@ -68,6 +69,65 @@ pub fn table_from_json(json: &Value) -> Result<Option<Table>> {
         t.trim_blank();
     }
     Ok(output)
+}
+
+/// `JsonTable`: one table of a multi-table file, with its column names as the
+/// first row.
+fn nested_table(data: &Value, name: &str) -> Result<Table> {
+    let bad = || Error::Json(format!("table '{name}' needs \"columns\" and \"rows\""));
+    let Some(Value::Array(columns)) = field(data, "columns").map(|c| c.into_owned()) else { return Err(bad()) };
+    let Some(Value::Array(rows)) = field(data, "rows").map(|c| c.into_owned()) else { return Err(bad()) };
+    let mut t = Table::new(columns.len(), rows.len() + 1);
+    let names: Vec<Option<String>> = columns
+        .iter()
+        .map(|c| match c {
+            Value::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    for (x, n) in names.iter().enumerate() {
+        t.set(x, 0, n.clone());
+        for (y, row) in rows.iter().enumerate() {
+            let v = n.as_ref().and_then(|n| field(row, n)).map(|v| v.into_owned());
+            t.set_cell(x, y + 1, v.and_then(Cell::from_value));
+        }
+    }
+    t.set_meta(Some(TableMeta { nested: false, name: Some(name.to_string()) }));
+    Ok(t)
+}
+
+/// `JsonTables`: `{"names": [...], "tables": {name: {"columns", "rows"}}}` as
+/// a two-column table of `name` and `table`, whose second column holds tables.
+pub fn tables_from_json(json: &Value, flags: &Flags) -> Result<Table> {
+    let Some(Value::Array(names)) = field(json, "names").map(|c| c.into_owned()) else {
+        return Err(Error::Json("multi-table JSON needs a \"names\" list".into()));
+    };
+    let names: Vec<String> = names
+        .into_iter()
+        .map(|n| match n {
+            Value::Str(s) => Ok(s),
+            _ => Err(Error::Json("table names must be strings".into())),
+        })
+        .collect::<Result<_>>()?;
+    let allowed = |n: &str| flags.tables.as_ref().map_or(true, |t| t.iter().any(|a| a == n));
+    let count = names.iter().filter(|n| allowed(n)).count();
+    let mut t = Table::new(2, count + 1);
+    t.set(0, 0, Some("name"));
+    t.set(1, 0, Some("table"));
+    let tables = field(json, "tables").map(|c| c.into_owned());
+    let mut at = 1;
+    for name in names.iter().filter(|n| allowed(n)) {
+        t.set(0, at, Some(name.clone()));
+        let data = tables
+            .as_ref()
+            .and_then(|tb| field(tb, name).map(|c| c.into_owned()))
+            .ok_or_else(|| Error::Json(format!("no data for table '{name}'")))?;
+        let inner = nested_table(&data, name)?;
+        t.set_cell(1, at, Cell::from_value(Value::Table(Rc::new(inner))));
+        at += 1;
+    }
+    t.set_meta(Some(TableMeta { nested: true, name: None }));
+    Ok(t)
 }
 
 pub fn parse_table(text: &str) -> Result<Option<Table>> {

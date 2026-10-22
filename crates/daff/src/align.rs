@@ -2,8 +2,18 @@
 //! `coopy.Index*` and `coopy.CompareTable`.
 use crate::unit::{stable_sort_by, Ordering, Unit};
 use crate::{Flags, Table};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+
+/// Results of the comparisons of tables nested in cells (`TableComparisonState`
+/// children), kept on the parent's alignment so a diff can find them again.
+#[derive(Debug, Default)]
+pub struct NestState {
+    pub flags: Flags,
+    pub children: Option<HashMap<String, Option<Rc<Alignment>>>>,
+    pub child_order: Vec<String>,
+}
 
 /// Where does a row/column of table A appear in table B?
 #[derive(Debug, Clone, Default)]
@@ -18,6 +28,7 @@ pub struct Alignment {
     index_columns: Option<Vec<Unit>>,
     manual_order: Option<Ordering>,
     marked_as_identical: bool,
+    pub comp: Option<Rc<RefCell<NestState>>>,
     pub reference: Option<Box<Alignment>>,
     pub meta: Option<Box<Alignment>>,
     pub has_addition: bool,
@@ -415,8 +426,15 @@ pub fn compare_tables3(
 }
 
 impl CompareTable {
+    /// Compare tables that are already shared (nested tables).
+    pub fn from_rc(p: Option<Rc<Table>>, a: Rc<Table>, b: Rc<Table>, flags: &Flags) -> Self {
+        CompareTable { p, a, b, flags: flags.clone() }
+    }
+
     pub fn align(&self) -> Alignment {
-        self.align_impl(&mut None)
+        let mut a = self.align_impl(&mut None);
+        a.comp = Some(Rc::new(RefCell::new(NestState { flags: self.flags.clone(), ..Default::default() })));
+        a
     }
 
     /// As [`align`](Self::align), also returning the row indexes built along

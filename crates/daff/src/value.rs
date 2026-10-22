@@ -2,6 +2,9 @@
 //! numbers, booleans, arrays and objects, which the reference passes through
 //! untouched while comparing them by their string form.
 
+use crate::Table;
+use std::rc::Rc;
+
 /// A JSON-like value (`Dynamic` in the reference).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -14,6 +17,8 @@ pub enum Value {
     Object(Vec<(String, Value)>),
     /// A `Map<String,Dynamic>` built by the diff (`{"before":…,"after":…}`).
     Hash(Vec<(String, Value)>),
+    /// A table held in a cell (the tables of a multi-table JSON file).
+    Table(Rc<Table>),
 }
 
 /// A non-null table cell.
@@ -125,6 +130,7 @@ impl Value {
                 let parts: Vec<String> = items.iter().map(|v| v.string_rec(&inner)).collect();
                 format!("[{}]", parts.join(","))
             }
+            Value::Table(_) => String::new(),
             Value::Object(fields) => Self::fields_rec(fields, indent),
             Value::Hash(fields) => {
                 let inner = Value::Object(fields.clone());
@@ -388,6 +394,7 @@ impl Value {
                 }
             }
             Value::Str(s) => quote(s, out),
+            Value::Table(_) => out.push_str("{}"),
             Value::Array(items) => {
                 if items.is_empty() {
                     out.push_str("[]");

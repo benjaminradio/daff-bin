@@ -24,6 +24,7 @@ pub mod mover;
 pub mod patch;
 pub mod render;
 pub mod table;
+pub mod tables;
 pub mod unit;
 pub mod value;
 
@@ -35,6 +36,7 @@ pub use flags::Flags;
 pub use merge::Merger;
 pub use patch::HighlightPatch;
 pub use render::{DiffRender, TerminalDiffRender};
-pub use table::Table;
+pub use table::{Table, TableMeta};
+pub use tables::Tables;
 pub use unit::{Ordering, Unit};
 pub use value::{Cell, Value};

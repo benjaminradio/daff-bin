@@ -3,7 +3,7 @@
 use crate::mover::move_units;
 use crate::unit::Unit;
 use crate::value::{Cell, Value};
-use crate::{Alignment, Flags, Table};
+use crate::{Alignment, CompareTable, Error, Flags, Result, Table, Tables};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -56,6 +56,9 @@ pub struct TableDiff<'a> {
     allow_delete: bool,
     allow_update: bool,
     allow_column: bool,
+    nested: bool,
+    nesting_present: bool,
+    error: Option<String>,
     builder: Builder,
     sep: String,
     conflict_sep: String,
@@ -277,6 +280,9 @@ impl<'a> TableDiff<'a> {
             allow_delete: true,
             allow_update: true,
             allow_column: true,
+            nested: false,
+            nesting_present: false,
+            error: None,
             builder: Builder::Flat,
             sep: String::new(),
             conflict_sep: String::new(),
@@ -291,6 +297,43 @@ impl<'a> TableDiff<'a> {
             summary: DiffSummary::default(),
             column_units_updated: HashSet::new(),
         }
+    }
+
+    /// Diff, including the diffs of any tables nested in cells
+    /// (`hiliteWithNesting`): one output table per nested table.
+    pub fn hilite_with_nesting(&mut self) -> Result<Tables> {
+        let mut out = Tables::new();
+        let ok = {
+            let base = out.add("base");
+            self.hilite(base)
+        };
+        if let Some(e) = self.error.take() {
+            return Err(Error::Nested(e));
+        }
+        if !ok {
+            return Ok(out);
+        }
+        if let Some(comp) = self.align.comp.clone() {
+            let (order, children) = {
+                let st = comp.borrow();
+                (st.children.is_some().then(|| st.child_order.clone()), st.children.clone().unwrap_or_default())
+            };
+            let Some(order) = order else { return Ok(out) };
+            out.set_ins_del(self.align.has_addition || self.align.has_removal);
+            for name in order {
+                let Some(Some(alignment)) = children.get(&name) else { continue };
+                if alignment.is_marked_as_identical() {
+                    continue;
+                }
+                let mut td = TableDiff::new(alignment, self.flags.clone());
+                let child_out = out.add(&name);
+                td.hilite(child_out);
+                if let Some(e) = td.error.take() {
+                    return Err(Error::Nested(e));
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn has_difference(&self) -> bool {
@@ -408,6 +451,9 @@ impl<'a> TableDiff<'a> {
         self.allow_update = self.flags.allow_update();
         self.allow_column = self.flags.allow_column();
         self.builder = if self.flags.allow_nested_cells { Builder::Nested } else { Builder::Flat };
+        let common = &self.a;
+        self.nested = common.meta().is_some_and(|m| m.nested);
+        self.nesting_present = false;
     }
 
     fn header_cell(t: &Table, x: isize, y: isize) -> Option<&Cell> {
@@ -712,6 +758,91 @@ impl<'a> TableDiff<'a> {
         }
     }
 
+    /// Compare tables held in cells, recording the results on the alignment,
+    /// and return the cells to show instead (`TableDiff.checkNesting`).
+    #[allow(clippy::too_many_arguments)]
+    fn check_nesting(
+        &mut self,
+        have_ll: bool,
+        ll: &Option<Cell>,
+        have_rr: bool,
+        rr: &Option<Cell>,
+        have_pp: bool,
+        pp: &Option<Cell>,
+        x: usize,
+        y: usize,
+    ) -> (Option<Cell>, Option<Cell>, Option<Cell>) {
+        let table_of = |c: &Option<Cell>| match c {
+            Some(Cell::Native { value: Value::Table(t), .. }) => Some(t.clone()),
+            _ => None,
+        };
+        let mut all_tables = true;
+        if have_ll {
+            all_tables &= table_of(ll).is_some();
+        }
+        if have_rr {
+            all_tables &= table_of(rr).is_some();
+        }
+        if have_pp {
+            all_tables &= table_of(pp).is_some();
+        }
+        if !all_tables {
+            return (ll.clone(), rr.clone(), pp.clone());
+        }
+        let (lt, rt, pt) = (
+            if have_ll { table_of(ll) } else { None },
+            if have_rr { table_of(rr) } else { None },
+            if have_pp { table_of(pp) } else { None },
+        );
+        let name_of = |t: &Option<Rc<Table>>| t.as_ref().and_then(|t| t.meta().and_then(|m| m.name.clone()));
+        let key = name_of(&lt).or_else(|| name_of(&rt)).unwrap_or_else(|| format!("{x}_{y}"));
+        let mut compare = false;
+        let mut child: Option<Rc<Alignment>> = None;
+        if let Some(comp) = &self.align.comp {
+            let mut st = comp.borrow_mut();
+            match &st.children {
+                None => {
+                    st.children = Some(Default::default());
+                    st.child_order = Vec::new();
+                    compare = true;
+                }
+                Some(c) => compare = !c.contains_key(&key),
+            }
+            if !compare {
+                child = st.children.as_ref().unwrap().get(&key).cloned().flatten();
+            }
+        }
+        if compare {
+            self.nesting_present = true;
+            let (Some(a), Some(b)) = (lt, rt) else {
+                // The reference dereferences a missing table here and crashes.
+                self.error = Some(format!("Cannot compare nested table '{key}': it is missing on one side"));
+                return (ll.clone(), rr.clone(), pp.clone());
+            };
+            let aligned = Rc::new(CompareTable::from_rc(pt, a, b, &self.flags).align());
+            let comp = self.align.comp.as_ref().unwrap();
+            let mut st = comp.borrow_mut();
+            st.children.as_mut().unwrap().insert(key.clone(), Some(aligned.clone()));
+            st.child_order.push(key.clone());
+            child = Some(aligned);
+        }
+        let Some(child) = child else {
+            self.error = Some(format!("Nested comparison '{key}' is not available"));
+            return (ll.clone(), rr.clone(), pp.clone());
+        };
+        let s = |t: String| Some(Cell::Str(t));
+        if child.is_marked_as_identical() || (have_ll && !have_rr) || (have_rr && !have_ll) {
+            let txt = format!("[{key}]");
+            (s(txt.clone()), s(txt.clone()), s(txt))
+        } else {
+            (
+                ll.as_ref().and_then(|_| s(format!("[a.{key}]"))),
+                rr.as_ref().and_then(|_| s(format!("[b.{key}]"))),
+                pp.as_ref().and_then(|_| s(format!("[p.{key}]"))),
+            )
+        }
+    }
+
     fn scan_row(&mut self, unit: Unit, output: &mut Table, at: usize, i: usize, out: usize) {
         let mut row_update = false;
         for j in 0..self.column_units.len() {
@@ -735,6 +866,12 @@ impl<'a> TableDiff<'a> {
                 {
                     self.have_addition = true;
                 }
+            }
+            if self.nested {
+                let (l2, r2, p2) = self.check_nesting(have_ll, &ll, have_rr, &rr, have_pp, &pp, i, j);
+                ll = l2;
+                rr = r2;
+                pp = p2;
             }
             let text = |c: &Option<Cell>| c.as_ref().map(|c| c.text().to_string());
             let (pp_t, ll_t, rr_t) = (text(&pp), text(&ll), text(&rr));

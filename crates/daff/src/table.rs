@@ -1,5 +1,15 @@
 use crate::value::Cell;
 use std::fmt;
+use std::rc::Rc;
+
+/// Extra information about where a table came from (`coopy.Meta`), used for
+/// tables that hold other tables.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TableMeta {
+    /// Cells of this table may themselves be tables.
+    pub nested: bool,
+    pub name: Option<String>,
+}
 
 /// A table of nullable string cells, ported from `coopy.SimpleTable`.
 ///
@@ -11,11 +21,12 @@ pub struct Table {
     data: Vec<Option<Cell>>,
     w: usize,
     h: usize,
+    meta: Option<Rc<TableMeta>>,
 }
 
 impl Table {
     pub fn new(w: usize, h: usize) -> Self {
-        Table { data: vec![None; w * h], w, h }
+        Table { data: vec![None; w * h], w, h, meta: None }
     }
 
     pub fn from_rows<I, R, S>(rows: I) -> Self
@@ -34,6 +45,14 @@ impl Table {
             }
         }
         t
+    }
+
+    pub fn meta(&self) -> Option<&TableMeta> {
+        self.meta.as_deref()
+    }
+
+    pub fn set_meta(&mut self, meta: Option<TableMeta>) {
+        self.meta = meta.map(Rc::new);
     }
 
     pub fn width(&self) -> usize {
