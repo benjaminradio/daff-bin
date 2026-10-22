@@ -14,6 +14,7 @@
 //! | `new daff.Merger(p, a, b, f)`    | [`Merger::new`]                 |
 
 pub mod align;
+pub mod cell_info;
 pub mod diff;
 pub mod error;
 pub mod flags;
@@ -24,7 +25,8 @@ pub mod patch;
 pub mod table;
 pub mod unit;
 
-pub use align::{compare_tables, compare_tables3, Alignment, CompareTable};
+pub use align::{compare_tables, compare_tables3, Alignment, CompareTable, IndexPair, Row};
+pub use cell_info::{examine_cell, CellInfo};
 pub use diff::{DiffSummary, TableDiff};
 pub use error::{Error, Result};
 pub use flags::Flags;

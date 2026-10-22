@@ -2,7 +2,7 @@
 //! implementation: options may appear anywhere, and `diff`/`copy` are implied
 //! by file names.
 use daff::format::csv::Csv;
-use daff::{compare_tables3, Flags, Table, TableDiff};
+use daff::{compare_tables3, Flags, HighlightPatch, Merger, Table, TableDiff};
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -50,9 +50,15 @@ impl Io {
         self.check_format(name)?;
         let bytes = std::fs::read(name).map_err(|e| format!("{name}: {e}"))?;
         let text = String::from_utf8_lossy(&bytes);
-        let (mut t, eol) = Csv::with_delimiter(&self.delim).parse(&text);
+        let parsed = Csv::with_delimiter(&self.delim).parse_full(&text);
+        // The reference traces these to stdout, which corrupts piped output;
+        // we write them to stderr instead (the one deliberate deviation).
+        for w in &parsed.warnings {
+            eprintln!("{w}");
+        }
+        let mut t = parsed.table;
         if self.eol.is_none() {
-            self.eol = eol;
+            self.eol = parsed.eol;
         }
         t.trim_blank();
         Ok(t)
@@ -106,6 +112,7 @@ struct Opts {
     flags: Flags,
     output: Option<String>,
     fail_if_diff: bool,
+    inplace: bool,
     order_set: bool,
     args: Vec<String>,
 }
@@ -115,6 +122,7 @@ fn parse_opts(io: &mut Io, argv: Vec<String>) -> Result<Opts, String> {
         flags: Flags::default(),
         output: None,
         fail_if_diff: false,
+        inplace: false,
         order_set: false,
         args: Vec::new(),
     };
@@ -197,6 +205,7 @@ fn parse_opts(io: &mut Io, argv: Vec<String>) -> Result<Opts, String> {
                 };
             }
             "--fail-if-diff" => o.fail_if_diff = true,
+            "--inplace" => o.inplace = true,
             "-h" | "--help" | "help" => o.args.insert(0, "help".into()),
             _ => o.args.push(tag),
         }
@@ -206,7 +215,7 @@ fn parse_opts(io: &mut Io, argv: Vec<String>) -> Result<Opts, String> {
 
 fn run(argv: Vec<String>) -> Result<u8, String> {
     let mut io = Io { delim: ",".into(), ..Default::default() };
-    let Opts { mut flags, output, fail_if_diff, order_set, mut args } = parse_opts(&mut io, argv)?;
+    let Opts { mut flags, output, fail_if_diff, inplace, order_set, mut args } = parse_opts(&mut io, argv)?;
     if args.first().map(String::as_str) == Some("help") || args.is_empty() {
         eprint!("{USAGE}");
         return Ok(1);
@@ -240,7 +249,7 @@ fn run(argv: Vec<String>) -> Result<u8, String> {
         None
     };
     let name = rest.get(offset).ok_or("expected a file name")?.clone();
-    let a = io.load(&name)?;
+    let mut a = io.load(&name)?;
     let mut b = None;
     let mut output = output;
     if rest.len() > offset + 1 {
@@ -249,6 +258,14 @@ fn run(argv: Vec<String>) -> Result<u8, String> {
         } else {
             output = Some(rest[offset + 1].clone());
         }
+    }
+    if inplace {
+        // The reference rejects --inplace unconditionally: it reports status 1
+        // without reading or writing anything. See docs/QUIRKS.md.
+        if output.is_some() {
+            eprintln!("Please do not use --inplace when specifying an output.");
+        }
+        return Ok(1);
     }
     let output = output.unwrap_or_else(|| "-".into());
     match cmd.as_str() {
@@ -266,7 +283,24 @@ fn run(argv: Vec<String>) -> Result<u8, String> {
             }
         }
         "trim" | "copy" => io.save(&output, &a)?,
-        "patch" | "merge" | "render" | "git" => return Err(format!("{cmd}: not implemented yet")),
+        "patch" => {
+            let patch = b.ok_or("patch needs a table and a patch")?;
+            HighlightPatch::new(&mut a, &patch).apply().map_err(|e| e.to_string())?;
+            io.save(&output, &a)?;
+        }
+        "merge" => {
+            let remote = b.ok_or("merge needs parent, local and remote tables")?;
+            let parent = parent.ok_or("merge needs parent, local and remote tables")?;
+            let conflicts = Merger::new(&parent, &mut a, &remote, flags).apply().map_err(|e| e.to_string())?;
+            if conflicts > 0 {
+                eprintln!("{conflicts} conflict{}", if conflicts > 1 { "s" } else { "" });
+            }
+            io.save(&output, &a)?;
+            if conflicts > 0 {
+                return Ok(if fail_if_diff { 2 } else { 1 });
+            }
+        }
+        "render" | "git" => return Err(format!("{cmd}: not implemented yet")),
         _ => unreachable!(),
     }
     Ok(0)

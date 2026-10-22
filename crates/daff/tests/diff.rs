@@ -54,3 +54,40 @@ fn id_column_diff_with_context() {
     let got = diff(None, "id,x,y\n1,a,b\n2,c,d\n", "id,x,y\n1,a,b\n2,c,e\n", f);
     assert_eq!(got, "@@,id,x,y\n,1,a,b\n->,2,c,d->e\n");
 }
+
+mod patch_and_merge {
+    use super::*;
+    use daff::{HighlightPatch, Merger};
+
+    fn csv(t: &Table) -> String {
+        Csv { delimiter: ",".into(), eol: Some("\n".into()) }.render_table(t)
+    }
+
+    #[test]
+    fn patch_round_trips_a_diff() {
+        let a = "name,age\nann,3\nbob,4\ncat,5\n";
+        let b = "name,age,x\nann,3,1\nbob,5,2\ndan,9,3\n";
+        let d = diff(None, a, b, Flags::default());
+        let (mut src, patch) = (parse(a), parse(&d));
+        HighlightPatch::new(&mut src, &patch).apply().unwrap();
+        assert_eq!(csv(&src), "name,age,x\nann,3,1\nbob,5,2\ndan,9,3\n");
+    }
+
+    #[test]
+    fn merge_applies_remote_changes_and_marks_conflicts() {
+        let (p, mut l, r) = (
+            parse("id,v\n1,a\n2,b\n"),
+            parse("id,v\n1,A\n2,b\n"),
+            parse("id,v\n1,Z\n2,c\n"),
+        );
+        let mut m = Merger::new(&p, &mut l, &r, Flags::default());
+        assert_eq!(m.apply().unwrap(), 1);
+        assert_eq!(m.conflict_infos().len(), 1);
+        assert_eq!(csv(&l), "id,v\n1,((( a ))) A /// Z\n2,c\n");
+    }
+
+    #[test]
+    fn empty_table_is_written_as_one_line() {
+        assert_eq!(csv(&Table::new(0, 0)), "\n");
+    }
+}

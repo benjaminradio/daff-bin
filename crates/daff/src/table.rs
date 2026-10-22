@@ -80,7 +80,11 @@ impl Table {
             if let Some(j) = *f {
                 for c in 0..self.w {
                     if let Some(v) = self.data.get(i * self.w + c) {
-                        data[j * self.w + c] = v.clone();
+                        let idx = j * self.w + c;
+                        if idx >= data.len() {
+                            data.resize(idx + 1, None);
+                        }
+                        data[idx] = v.clone();
                     }
                 }
             }
@@ -96,7 +100,11 @@ impl Table {
             if let Some(j) = *f {
                 for r in 0..self.h {
                     if let Some(v) = self.data.get(r * self.w + i) {
-                        data[r * wfate + j] = v.clone();
+                        let idx = r * wfate + j;
+                        if idx >= data.len() {
+                            data.resize(idx + 1, None);
+                        }
+                        data[idx] = v.clone();
                     }
                 }
             }

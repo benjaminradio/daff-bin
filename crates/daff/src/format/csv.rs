@@ -17,6 +17,14 @@ impl Default for Csv {
     }
 }
 
+/// Result of [`Csv::parse_full`].
+pub struct Parsed {
+    pub table: Table,
+    /// First line ending found in the text.
+    pub eol: Option<String>,
+    pub warnings: Vec<String>,
+}
+
 struct Parser<'a> {
     txt: &'a [char],
     delim: Vec<char>,
@@ -109,12 +117,34 @@ impl Parser<'_> {
 }
 
 impl Csv {
+    /// Parse a single cell without CSV structure (`Csv.parseCell`): only the
+    /// `NULL` / `_NULL` escaping is interpreted.
+    pub fn parse_cell(txt: Option<&str>) -> Option<String> {
+        let txt = txt?;
+        if txt == "NULL" {
+            return None;
+        }
+        let first_non_underscore = txt.chars().position(|c| c != '_').unwrap_or(txt.chars().count());
+        if first_non_underscore > 0 && txt.chars().skip(first_non_underscore).collect::<String>() == "NULL" {
+            return Some(txt.chars().skip(1).collect());
+        }
+        Some(txt.to_string())
+    }
+
     pub fn with_delimiter(delim: &str) -> Self {
         Self { delimiter: delim.into(), eol: None }
     }
 
     /// Parse text into a table, also returning the first line ending seen.
     pub fn parse(&self, text: &str) -> (Table, Option<String>) {
+        let p = self.parse_full(text);
+        (p.table, p.eol)
+    }
+
+    /// As [`parse`](Self::parse), also returning the warnings the reference
+    /// would have traced.
+    pub fn parse_full(&self, text: &str) -> Parsed {
+        let mut warnings = Vec::new();
         let chars: Vec<char> = text.chars().collect();
         let delim: Vec<char> = self.delimiter.chars().collect();
         let mut p = Parser { txt: &chars, delim, cursor: 0, row_ended: false, discovered_eol: None };
@@ -130,6 +160,14 @@ impl Csv {
                 w = at + 1;
                 tab.resize(w, h);
             }
+            if at >= w && yat > 0 && cell.as_deref().is_some_and(|c| !c.is_empty()) {
+                let context: Vec<&str> = (0..w).map(|i| tab.get(i, yat).unwrap_or("null")).collect();
+                warnings.push(format!(
+                    "Ignored overflowing row {yat} with cell '{}' after: {}",
+                    cell.as_deref().unwrap_or(""),
+                    context.join(",")
+                ));
+            }
             // Overflowing cells on later rows are written through the flat
             // index, as in the reference implementation.
             tab.set(at, h - 1, cell);
@@ -140,7 +178,7 @@ impl Csv {
             }
             p.cursor += 1;
         }
-        (tab, p.discovered_eol)
+        Parsed { table: tab, eol: p.discovered_eol, warnings }
     }
 
     pub fn render_cell(&self, cell: Option<&str>) -> String {
@@ -160,7 +198,9 @@ impl Csv {
     pub fn render_table(&self, t: &Table) -> String {
         let eol = self.eol.as_deref().unwrap_or("\r\n");
         let mut out = String::new();
-        for y in 0..t.height() {
+        // The reference's row stream always yields a first row, so an empty
+        // table is written as one line (of `NULL` cells if it has columns).
+        for y in 0..t.height().max(1) {
             for x in 0..t.width() {
                 if x > 0 {
                     out.push_str(&self.delimiter);

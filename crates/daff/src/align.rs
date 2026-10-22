@@ -246,7 +246,7 @@ fn cell_text(t: &Table, x: usize, y: usize) -> &str {
     t.get(x, y).unwrap_or("")
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Index {
     items: HashMap<String, Vec<usize>>,
     cols: Vec<usize>,
@@ -278,9 +278,17 @@ impl Index {
     }
 
     fn to_key(&self, t: &Table, i: usize) -> String {
-        let mut wide = String::from(if i < self.hdr { "_" } else { "" });
+        self.key_from(i < self.hdr, |c| Some(cell_text(t, c, i).to_string()))
+    }
+
+    fn to_key_by_content(&self, row: &dyn Row) -> String {
+        self.key_from(row.is_preamble(), |c| row.row_string(c))
+    }
+
+    fn key_from(&self, preamble: bool, cell: impl Fn(usize) -> Option<String>) -> String {
+        let mut wide = String::from(if preamble { "_" } else { "" });
         for (k, &c) in self.cols.iter().enumerate() {
-            let mut txt = cell_text(t, c, i).to_string();
+            let mut txt = cell(c).unwrap_or_default();
             if self.ignore_whitespace {
                 txt = txt.trim().to_string();
             }
@@ -299,13 +307,22 @@ impl Index {
     }
 }
 
-struct CrossMatch {
-    spot_a: usize,
-    spot_b: usize,
-    item_b: Option<usize>,
+/// A row whose cells are read by column of the indexed table
+/// (`coopy.Row`); used to look up rows of a table by content.
+pub trait Row {
+    fn row_string(&self, c: usize) -> Option<String>;
+    fn is_preamble(&self) -> bool;
 }
 
-struct IndexPair {
+pub struct CrossMatch {
+    pub spot_a: usize,
+    pub spot_b: usize,
+    pub item_a: Vec<usize>,
+    pub item_b: Option<usize>,
+}
+
+#[derive(Clone)]
+pub struct IndexPair {
     ia: Index,
     ib: Index,
 }
@@ -325,16 +342,28 @@ impl IndexPair {
         self.ib.index_table(b, hdr);
     }
 
+    pub fn query_by_content(&self, row: &dyn Row) -> CrossMatch {
+        self.query_by_key(&self.ia.to_key_by_content(row))
+    }
+
     fn query_local(&self, row: usize) -> CrossMatch {
-        let ka = self.local_key(row);
-        let item_a = self.ia.items.get(&ka);
-        let item_b = self.ib.items.get(&ka);
+        self.query_by_key(&self.local_key(row))
+    }
+
+    fn query_by_key(&self, ka: &str) -> CrossMatch {
+        let item_a = self.ia.items.get(ka);
+        let item_b = self.ib.items.get(ka);
         let (mut spot_a, mut spot_b) = (0, 0);
         if !ka.is_empty() {
             spot_a = item_a.map_or(0, Vec::len);
             spot_b = item_b.map_or(0, Vec::len);
         }
-        CrossMatch { spot_a, spot_b, item_b: item_b.and_then(|v| v.first().copied()) }
+        CrossMatch {
+            spot_a,
+            spot_b,
+            item_a: item_a.cloned().unwrap_or_default(),
+            item_b: item_b.and_then(|v| v.first().copied()),
+        }
     }
 
     fn local_key(&self, row: usize) -> String {
@@ -387,13 +416,25 @@ pub fn compare_tables3(
 
 impl CompareTable {
     pub fn align(&self) -> Alignment {
+        self.align_impl(&mut None)
+    }
+
+    /// As [`align`](Self::align), also returning the row indexes built along
+    /// the way (`CompareTable.storeIndexes`).
+    pub fn align_storing_indexes(&self) -> (Alignment, Vec<IndexPair>) {
+        let mut idx = Some(Vec::new());
+        let a = self.align_impl(&mut idx);
+        (a, idx.unwrap())
+    }
+
+    fn align_impl(&self, indexes: &mut Option<Vec<IndexPair>>) -> Alignment {
         let mut align = Alignment::new();
         match &self.p {
-            None => self.align_core2(&mut align, &self.a, &self.b),
+            None => self.align_core2(&mut align, &self.a, &self.b, indexes),
             Some(p) => {
                 let mut reference = Alignment::new();
-                self.align_core2(&mut align, p, &self.b);
-                self.align_core2(&mut reference, p, &self.a);
+                self.align_core2(&mut align, p, &self.b, indexes);
+                self.align_core2(&mut reference, p, &self.a, indexes);
                 align.meta.as_mut().unwrap().reference = Some(reference.meta.clone().unwrap());
                 align.reference = Some(Box::new(reference));
             }
@@ -401,7 +442,13 @@ impl CompareTable {
         align
     }
 
-    fn align_core2(&self, align: &mut Alignment, a: &Rc<Table>, b: &Rc<Table>) {
+    fn align_core2(
+        &self,
+        align: &mut Alignment,
+        a: &Rc<Table>,
+        b: &Rc<Table>,
+        indexes: &mut Option<Vec<IndexPair>>,
+    ) {
         let mut meta = Alignment::new();
         self.align_columns(&mut meta, a, b);
         let column_order = meta.to_order();
@@ -452,6 +499,9 @@ impl CompareTable {
                     reverse_pending_ct -= 1;
                 }
                 used_reverse.insert(j as isize);
+            }
+            if let Some(v) = indexes {
+                v.push(index.clone());
             }
             index_top = Some(index);
         } else {
@@ -517,6 +567,9 @@ impl CompareTable {
                     continue;
                 }
                 index_ct += 1;
+                if let Some(v) = indexes {
+                    v.push(index.clone());
+                }
 
                 let mut fixed: Vec<usize> = Vec::new();
                 for &j in &pending {
