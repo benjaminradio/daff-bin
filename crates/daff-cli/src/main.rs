@@ -286,6 +286,7 @@ struct Opts {
     output: Option<String>,
     fail_if_diff: bool,
     inplace: bool,
+    git: bool,
     order_set: bool,
     args: Vec<String>,
 }
@@ -296,6 +297,7 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
         output: None,
         fail_if_diff: false,
         inplace: false,
+        git: false,
         order_set: false,
         args: Vec::new(),
     };
@@ -333,6 +335,7 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
                 }
             }
             "--inplace" => o.inplace = true,
+            "--git" => o.git = true,
             "--unordered" => {
                 o.flags.ordered = false;
                 o.flags.unchanged_context = 0;
@@ -395,9 +398,109 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
     Ok(o)
 }
 
+/// `Coopy.command`: echo, then run a command with inherited output.
+fn command(cmd: &str, args: &[&str]) -> i32 {
+    let mut line = format!("$ {cmd}");
+    for a in args {
+        line.push(' ');
+        if a.contains(' ') {
+            line.push_str(&format!("\"{a}\""));
+        } else {
+            line.push_str(a);
+        }
+    }
+    println!("{line}");
+    let _ = std::io::stdout().flush();
+    match std::process::Command::new(cmd).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status() {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(_) => 127,
+    }
+}
+
+/// `daff git csv tsv ...`: configure git to use daff for diffs and merges.
+fn install_git_driver(formats: &[String]) -> Res<u8> {
+    print!("Setting up git to use daff on");
+    for f in formats {
+        print!(" *.{f}");
+    }
+    println!(" files");
+    if command("git", &["--version"]) != 0 {
+        eprintln!("! Cannot run git, aborting");
+        return Ok(1);
+    }
+    println!("- Can run git");
+    let mut daff_cmd = String::new();
+    for d in ["daff", "daff.rb", "daff.py"] {
+        if command(d, &["version"]) == 0 {
+            daff_cmd = d.to_string();
+            println!("- Can run {d} as \"{d}\"");
+            break;
+        }
+    }
+    if daff_cmd.is_empty() {
+        eprintln!("! Cannot find daff, is it in your path?");
+        return Ok(1);
+    }
+    for f in formats {
+        let have_diff = command("git", &["config", "--global", "--get", &format!("diff.daff-{f}.command")]) == 0;
+        command("git", &["config", "--global", &format!("diff.daff-{f}.command"), &format!("{daff_cmd} diff --git")]);
+        if have_diff {
+            println!("- Cleared existing daff diff driver for {f}");
+        }
+        println!("- Added diff driver for {f}");
+        let have_merge = command("git", &["config", "--global", "--get", &format!("merge.daff-{f}.driver")]) == 0;
+        if !have_merge {
+            command("git", &["config", "--global", &format!("merge.daff-{f}.name"), &format!("daff tabular {f} merge")]);
+        }
+        command(
+            "git",
+            &["config", "--global", &format!("merge.daff-{f}.driver"), &format!("{daff_cmd} merge --output %A %O %A %B")],
+        );
+        if have_merge {
+            println!("- Cleared existing daff merge driver for {f}");
+        }
+        println!("- Added merge driver for {f}");
+    }
+    if !std::path::Path::new(".git/config").exists() {
+        eprintln!("! This next part needs to happen in a git repository.");
+        eprintln!("! Please run again from the root of a git repository.");
+        return Ok(1);
+    }
+    let attr = ".gitattributes";
+    let mut txt = String::new();
+    if !std::path::Path::new(attr).exists() {
+        println!("- No .gitattributes file");
+    } else {
+        println!("- You have a .gitattributes file");
+        txt = std::fs::read_to_string(attr).map_err(|e| e.to_string())?;
+    }
+    let mut need_update = false;
+    let mut post = String::new();
+    for f in formats {
+        if txt.contains(&format!("*.{f}")) {
+            eprintln!("- Your .gitattributes file already mentions *.{f}");
+        } else {
+            post.push_str(&format!("*.{f} diff=daff-{f}\n"));
+            post.push_str(&format!("*.{f} merge=daff-{f}\n"));
+            println!("- Placing the following lines in .gitattributes:");
+            print!("{post}");
+            if !txt.is_empty() && !need_update {
+                txt.push('\n');
+            }
+            txt.push_str(&post);
+            need_update = true;
+        }
+    }
+    if need_update {
+        std::fs::write(attr, txt).map_err(|e| e.to_string())?;
+    }
+    println!("- Done!");
+    Ok(0)
+}
+
 fn run(argv: Vec<String>) -> Res<u8> {
     let mut st = State::new();
-    let Opts { mut flags, output, fail_if_diff, inplace, order_set, mut args } = parse_opts(&mut st, argv)?;
+    let Opts { mut flags, output, fail_if_diff, inplace, git, order_set, mut args } = parse_opts(&mut st, argv)?;
     if args.first().map(String::as_str) == Some("help") || args.is_empty() {
         eprint!("{USAGE}");
         return Ok(1);
@@ -423,9 +526,28 @@ fn run(argv: Vec<String>) -> Res<u8> {
         return Ok(0);
     }
     if cmd == "git" {
-        return Err("git: not implemented yet".into());
+        let formats = args.split_off(offset);
+        return install_git_driver(&formats);
     }
-    let rest = args.split_off(offset);
+    let mut rest = args.split_off(offset);
+    if git {
+        // Called by git as an external diff driver: 7 or 9 parameters.
+        let ct = rest.len();
+        if ct != 7 && ct != 9 {
+            eprintln!("Expected 7 or 9 parameters from git, but got {ct}");
+            return Ok(1);
+        }
+        let old_display_path = rest[0].clone();
+        let mut new_display_path = rest[0].clone();
+        let (old_file, new_file) = (rest[1].clone(), rest[4].clone());
+        if ct == 9 {
+            print!("{}", rest[8]);
+            new_display_path = rest[7].clone();
+        }
+        print!("--- a/{old_display_path}\n");
+        print!("+++ b/{new_display_path}\n");
+        rest = vec![old_file, new_file];
+    }
     let mut offset = 0;
     let parent = if rest.len() >= 3 {
         offset = 1;
