@@ -304,6 +304,7 @@ If you need more control, here is the full list of flags:
      -w / --ignore-whitespace: ignore changes in leading/trailing whitespace
      -i / --ignore-case: ignore differences in case
      -d EPS / --ignore-epsilon EPS: ignore small floating point differences
+     --reference-compat: reproduce the bugs of the original daff 1.4.2 (see docs/BUGS.md)
 
   daff render [--output OUTPUT.html] [--css CSS.css] [--fragment] [--plain] diff.csv
      --css CSS.css: generate a suitable css file to go with the html
@@ -367,6 +368,7 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
             }
             "--inplace" => o.inplace = true,
             "--git" => o.git = true,
+            "--reference-compat" => daff::set_reference_compat(true),
             "--unordered" => {
                 o.flags.ordered = false;
                 o.flags.unchanged_context = 0;
@@ -530,6 +532,9 @@ fn install_git_driver(formats: &[String]) -> Res<u8> {
 }
 
 fn run(argv: Vec<String>) -> Res<u8> {
+    if std::env::var_os("DAFF_REFERENCE_COMPAT").is_some_and(|v| v != "0") {
+        daff::set_reference_compat(true);
+    }
     let mut st = State::new();
     let Opts { mut flags, output, fail_if_diff, inplace, git, order_set, mut args } = parse_opts(&mut st, argv)?;
     if args.first().map(String::as_str) == Some("help") || args.is_empty() {

@@ -11,6 +11,7 @@ fi
 REF="$ORACLE/node_modules/daff/bin/daff.js"
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 OURS="$ROOT/target/release/daff"
+export DAFF_REFERENCE_COMPAT=1  # the reference has the bugs listed in docs/BUGS.md
 for mode in diff patch patch3 merge html color render copy; do
     printf '%-7s ' "$mode:"
     MODE=$mode THREE=0.3 python3 "$ROOT/scripts/fuzz_oracle.py" "$REF" "$OURS" "$N" 1 | tail -1

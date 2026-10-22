@@ -15,6 +15,7 @@
 
 pub mod align;
 pub mod cell_info;
+pub mod compat;
 pub mod diff;
 pub mod error;
 pub mod flags;
@@ -30,6 +31,7 @@ pub mod value;
 
 pub use align::{compare_tables, compare_tables3, Alignment, CompareTable, IndexPair, Row};
 pub use cell_info::{examine_cell, CellInfo};
+pub use compat::{reference_compat, set_reference_compat};
 pub use diff::{DiffSummary, TableDiff};
 pub use error::{Error, Result};
 pub use flags::Flags;
