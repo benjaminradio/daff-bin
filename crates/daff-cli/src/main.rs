@@ -29,6 +29,10 @@ struct State {
     order_preference: bool,
     css_output: Option<String>,
     fragment: bool,
+    /// The first CSV file read started with a byte order mark.
+    bom_preference: bool,
+    /// Write that byte order mark in front of CSV output (data commands only).
+    write_bom: bool,
 }
 
 type Res<T> = Result<T, String>;
@@ -45,6 +49,8 @@ impl State {
             order_preference: false,
             css_output: None,
             fragment: false,
+            bom_preference: false,
+            write_bom: false,
         }
     }
 
@@ -96,7 +102,13 @@ impl State {
             return Err(self.unsupported("format 'sqlite'"));
         }
         let bytes = std::fs::read(name).map_err(|e| format!("{name}: {e}"))?;
-        let text = String::from_utf8_lossy(&bytes);
+        let text = if daff::reference_compat() {
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            String::from_utf8(bytes).map_err(|e| {
+                format!("{name}: not valid UTF-8 (first bad byte at offset {}); convert the file to UTF-8 first", e.utf8_error().valid_up_to())
+            })?
+        };
         if ext == "ndjson" {
             return parse_ndjson(&text).map_err(|e| e.to_string());
         }
@@ -131,6 +143,7 @@ impl State {
         if self.csv_eol_preference.is_none() {
             self.csv_eol_preference = parsed.eol;
         }
+        self.bom_preference |= parsed.bom;
         let mut t = parsed.table;
         t.trim_blank();
         Ok(t)
@@ -191,7 +204,11 @@ impl State {
                     delimiter: self.delim_preference.clone().unwrap_or_else(|| ",".into()),
                     eol: self.csv_eol_preference.clone(),
                 };
-                Ok(Some(csv.render_table(t)))
+                let mut txt = csv.render_table(t);
+                if self.write_bom && self.bom_preference {
+                    txt.insert(0, '\u{feff}');
+                }
+                Ok(Some(txt))
             }
             Some("html") | Some("www") => {
                 self.render_table(flags, name, t)?;
@@ -630,11 +647,15 @@ fn run(argv: Vec<String>) -> Res<u8> {
                 return Ok(1);
             }
         }
-        "trim" => st.save_table(&flags, &output, &a, None)?,
+        "trim" => {
+            st.write_bom = true;
+            st.save_table(&flags, &output, &a, None)?
+        }
         "copy" => {
             if a.meta().is_some_and(|m| m.nested) {
                 return Err("cannot copy a multi-table JSON file".into());
             }
+            st.write_bom = true;
             let mut os = Tables::new();
             *os.add("untitled") = a;
             let color = st.use_color(&flags, &output);
@@ -644,6 +665,7 @@ fn run(argv: Vec<String>) -> Res<u8> {
         "patch" => {
             let patch = b.ok_or("patch needs a table and a patch")?;
             HighlightPatch::new(&mut a, &patch).apply().map_err(|e| e.to_string())?;
+            st.write_bom = true;
             st.save_table(&flags, &output, &a, None)?;
         }
         "merge" => {
@@ -653,6 +675,7 @@ fn run(argv: Vec<String>) -> Res<u8> {
             if conflicts > 0 {
                 eprintln!("{conflicts} conflict{}", if conflicts > 1 { "s" } else { "" });
             }
+            st.write_bom = true;
             st.save_table(&flags, &output, &a, None)?;
             if conflicts > 0 {
                 return Ok(if fail_if_diff { 2 } else { 1 });

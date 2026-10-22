@@ -588,7 +588,7 @@ impl<'a> HighlightPatch<'a> {
             self.source.insert_or_delete_rows(&f, row_permutation.len());
         }
         let len = Self::process_mods(&mut self.mods, &mut fate, self.source.height());
-        self.source.insert_or_delete_rows(&Self::fate_to_table(&fate), len as usize);
+        self.source.insert_or_delete_rows(&Self::fate_to_table(&fate), len.max(0) as usize);
         self.need_dest_columns();
         let pidc = self.patch_in_dest_col.clone().unwrap();
         let mods = self.mods.clone();
@@ -702,6 +702,6 @@ impl<'a> HighlightPatch<'a> {
             }
         }
         let len = Self::process_mods(&mut self.cmods, &mut fate, self.source.width());
-        self.source.insert_or_delete_columns(&Self::fate_to_table(&fate), len as usize);
+        self.source.insert_or_delete_columns(&Self::fate_to_table(&fate), len.max(0) as usize);
     }
 }

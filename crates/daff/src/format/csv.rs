@@ -23,6 +23,8 @@ pub struct Parsed {
     /// First line ending found in the text.
     pub eol: Option<String>,
     pub warnings: Vec<String>,
+    /// The text started with a UTF-8 byte order mark (which is not part of the data).
+    pub bom: bool,
 }
 
 struct Parser<'a> {
@@ -116,6 +118,11 @@ impl Parser<'_> {
     }
 }
 
+/// `NULL`, `_NULL`, `__NULL`, ...
+fn is_null_like(s: &str) -> bool {
+    s.trim_start_matches('_') == "NULL"
+}
+
 impl Csv {
     /// Parse a single cell without CSV structure (`Csv.parseCell`): only the
     /// `NULL` / `_NULL` escaping is interpreted.
@@ -144,6 +151,46 @@ impl Csv {
     /// As [`parse`](Self::parse), also returning the warnings the reference
     /// would have traced.
     pub fn parse_full(&self, text: &str) -> Parsed {
+        if crate::compat::reference_compat() {
+            return self.parse_reference(text);
+        }
+        let (text, bom) = match text.strip_prefix('\u{feff}') {
+            Some(rest) => (rest, true),
+            None => (text, false),
+        };
+        let chars: Vec<char> = text.chars().collect();
+        let delim: Vec<char> = self.delimiter.chars().collect();
+        let mut p = Parser { txt: &chars, delim, cursor: 0, row_ended: false, discovered_eol: None };
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        let mut row: Vec<Option<String>> = Vec::new();
+        while p.cursor < chars.len() {
+            row.push(p.parse_cell_part());
+            if p.row_ended {
+                rows.push(std::mem::take(&mut row));
+            }
+            p.cursor += 1;
+        }
+        if !row.is_empty() {
+            rows.push(row);
+        }
+        // Ragged rows widen the table; short rows are padded with blanks
+        // (docs/BUGS.md B-04, B-05).
+        let w = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let mut tab = Table::new(w, rows.len());
+        for (y, r) in rows.into_iter().enumerate() {
+            let len = r.len();
+            for (x, c) in r.into_iter().enumerate() {
+                tab.set(x, y, c);
+            }
+            for x in len..w {
+                tab.set(x, y, Some(""));
+            }
+        }
+        Parsed { table: tab, eol: p.discovered_eol, warnings: Vec::new(), bom }
+    }
+
+    /// The reference implementation's parser, quirks included.
+    fn parse_reference(&self, text: &str) -> Parsed {
         let mut warnings = Vec::new();
         let chars: Vec<char> = text.chars().collect();
         let delim: Vec<char> = self.delimiter.chars().collect();
@@ -178,11 +225,16 @@ impl Csv {
             }
             p.cursor += 1;
         }
-        Parsed { table: tab, eol: p.discovered_eol, warnings }
+        Parsed { table: tab, eol: p.discovered_eol, warnings, bom: false }
     }
 
     pub fn render_cell(&self, cell: Option<&str>) -> String {
         let Some(s) = cell else { return "NULL".into() };
+        // A string that looks like the null marker is written with one more
+        // underscore, so reading it back gives the same string.
+        if !crate::compat::reference_compat() && is_null_like(s) {
+            return format!("_{s}");
+        }
         let first_last_space = s.starts_with(' ') || s.ends_with(' ');
         let need_quote = first_last_space
             || s.contains(['"', '\r', '\n', '\t'])

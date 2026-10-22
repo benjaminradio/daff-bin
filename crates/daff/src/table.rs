@@ -151,7 +151,9 @@ impl Table {
             return;
         }
         let blank = |c: Option<&str>| matches!(c, None | Some(""));
-        let h_test = self.h.min(3);
+        // The reference only looks at the top three rows when deciding whether
+        // trailing columns are blank, which drops data below them (B-05).
+        let h_test = if crate::compat::reference_compat() { self.h.min(3) } else { self.h };
         loop {
             if self.h == 0 || !(0..self.w).all(|i| blank(self.get(i, self.h - 1))) {
                 break;
