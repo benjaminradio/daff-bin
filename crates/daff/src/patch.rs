@@ -7,6 +7,7 @@ use crate::format::csv::Csv;
 use crate::unit::stable_sort_by;
 use crate::{Result, Table};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Map that iterates in insertion order, like the reference's `StringMap`
 /// (the order matters when several patch columns land on the same output column).
@@ -90,6 +91,27 @@ fn sort_mods(a: &PatchUnit, b: &PatchUnit) -> i64 {
     ord(a.patch_row.cmp(&b.patch_row))
 }
 
+/// Something in the diff that does not fit the table it is applied to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchIssue {
+    /// Row of the diff (0-based).
+    pub patch_row: usize,
+    pub kind: PatchIssueKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchIssueKind {
+    /// The cell does not have the value the diff expects (and not the new one).
+    CellChanged,
+    /// A row to delete differs from the row the diff shows.
+    RowChanged,
+    /// A row to update does not exist.
+    RowNotFound,
+    /// The diff itself records a conflict.
+    Conflict,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Context,
@@ -140,6 +162,9 @@ pub struct HighlightPatch<'a> {
     finished_columns: bool,
     // Row bookkeeping of the fixed algorithm (see `finish_rows_by_items`).
     items: Vec<Item>,
+    orig: Option<Rc<Table>>,
+    force: bool,
+    issues: Vec<PatchIssue>,
     used_rows: std::collections::HashSet<usize>,
     last_matched: isize,
 }
@@ -185,9 +210,25 @@ impl<'a> HighlightPatch<'a> {
             preamble_row: 0,
             finished_columns: false,
             items: Vec::new(),
+            orig: None,
+            force: false,
+            issues: Vec::new(),
             used_rows: Default::default(),
             last_matched: -1,
         }
+    }
+
+    /// Apply the diff even where it does not match the table: values are
+    /// overwritten and rows deleted whatever they contain, as the reference does.
+    pub fn force(&mut self, force: bool) -> &mut Self {
+        self.force = force;
+        self
+    }
+
+    /// Problems found by the last [`apply`](Self::apply). The parts of the diff
+    /// that fit were applied; the rest was left alone.
+    pub fn issues(&self) -> &[PatchIssue] {
+        &self.issues
     }
 
     pub fn apply(&mut self) -> Result<bool> {
@@ -213,6 +254,8 @@ impl<'a> HighlightPatch<'a> {
         self.preamble_row = 0;
         self.finished_columns = false;
         self.items.clear();
+        self.issues.clear();
+        self.orig = None;
         self.used_rows.clear();
         self.last_matched = -1;
 
@@ -225,6 +268,11 @@ impl<'a> HighlightPatch<'a> {
         self.payload_col = 1 + self.rc_offset;
         self.payload_top = patch.width();
         self.rc_offset = usize::from(patch.get(0, 0).unwrap_or("") == "@:@");
+        if !crate::compat::reference_compat() {
+            // With an index column the payload starts one column later; the
+            // reference treats the action column as data (quirk 17).
+            self.payload_col = 1 + self.rc_offset;
+        }
         for r in 0..patch.height() {
             self.actions.push(patch.get(self.rc_offset, r).unwrap_or("").to_string());
         }
@@ -274,6 +322,7 @@ impl<'a> HighlightPatch<'a> {
         if self.indexes.is_some() {
             return;
         }
+        self.orig = Some(Rc::new(self.source.clone()));
         let (_, idx) = compare_tables(self.source, self.source, None).align_storing_indexes();
         self.indexes = Some(idx);
         self.need_source_columns();
@@ -360,6 +409,30 @@ impl<'a> HighlightPatch<'a> {
                 continue;
             }
             let mut mod_ = self.modifier.get(&i).cloned();
+            if !self.force && !crate::compat::reference_compat() && self.source.height() > 0 {
+                // Column changes the table already has are not made twice.
+                let have = |n: &str| (0..self.source.width()).any(|x| self.source.get(x, 0) == Some(n));
+                let bare = mod_.as_deref().map(|m| m.trim_start_matches(':'));
+                match bare {
+                    Some("+++") if have(&name) => {
+                        mod_ = None;
+                        self.modifier.remove(&i);
+                    }
+                    Some("---") if !have(&name) => {
+                        self.modifier.insert(i, "...".into());
+                        self.header.insert(i, name.clone());
+                        continue;
+                    }
+                    Some(m) if m.starts_with('(') => {
+                        let old: String = m.chars().skip(1).take(m.chars().count().saturating_sub(2)).collect();
+                        if !have(&old) && have(&name) {
+                            mod_ = None;
+                            self.modifier.remove(&i);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let mut mv = false;
             if let Some(m) = &mod_ {
                 if m.starts_with(':') {
@@ -684,7 +757,8 @@ impl<'a> HighlightPatch<'a> {
             return;
         }
         let n = self.source.height();
-        let items = self.items.clone();
+        let mut items = self.items.clone();
+        let skipped = if self.force { Default::default() } else { self.check_preconditions(&mut items) };
         // Rows that anchor the omitted rows: matched, not moved, not deleted (the
         // position of a deleted row in the diff is unreliable once rows move).
         let anchors: Vec<(usize, usize)> = items
@@ -738,7 +812,6 @@ impl<'a> HighlightPatch<'a> {
         if n > 0 {
             fate[0] = 0;
         }
-        let mut items = items;
         let item_of_source: HashMap<usize, usize> = items
             .iter()
             .enumerate()
@@ -783,6 +856,9 @@ impl<'a> HighlightPatch<'a> {
                     }
                     let vrow = self.row_info.value.clone().unwrap_or_default();
                     for &c in self.header_pre.values() {
+                        if skipped.contains(&(it.patch_row, c)) {
+                            continue;
+                        }
                         let txt = self.patch.get(c, it.patch_row as usize).unwrap_or("").to_string();
                         let cell = examine_cell(0, 0, Some(&txt), "", &vrow, 0);
                         if !cell.updated || cell.conflicted {
@@ -828,6 +904,156 @@ impl<'a> HighlightPatch<'a> {
                 self.source.set(i, 0, Some(next));
             }
         }
+    }
+
+    /// Check the diff against the table before applying it. Cells that
+    /// already have their new value are skipped, cells and rows that differ
+    /// from what the diff expects are left alone and reported, a row that is
+    /// already present is not added again. Returns the (diff row, diff column)
+    /// pairs of cells not to update.
+    fn check_preconditions(&mut self, items: &mut [Item]) -> std::collections::HashSet<(isize, usize)> {
+        let mut skipped = std::collections::HashSet::new();
+        let Some(orig) = self.orig.clone() else { return skipped };
+        let same = |a: Option<&str>, b: Option<&str>| a.unwrap_or("") == b.unwrap_or("");
+        let show = |patch_row: isize| -> String {
+            (0..self.patch.width())
+                .filter_map(|c| self.patch.get(c, patch_row as usize))
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut issues: Vec<PatchIssue> = Vec::new();
+        let mut issue = |it: &Item, kind, message: String| {
+            issues.push(PatchIssue { patch_row: it.patch_row as usize, kind, message });
+        };
+        let column_changes = self.cmods.iter().any(|c| c.add || c.rem);
+        let pre: Vec<usize> = self.header_pre.values().copied().collect();
+        let post: Vec<usize> = self.header_post.values().copied().collect();
+        // Signatures of rows nobody claimed, for spotting rows that are already there.
+        let mut present: Option<HashMap<Vec<String>, Vec<usize>>> = None;
+        for it in items.iter_mut() {
+            match it.kind {
+                Kind::Delete if it.source_row >= 0 => {
+                    let s = it.source_row as usize;
+                    let differs = pre.iter().any(|&c| {
+                        self.patch_in_source_col.get(&c).is_some_and(|&sc| {
+                            !same(orig.get(sc, s), self.patch.get(c, it.patch_row as usize))
+                        })
+                    });
+                    if differs {
+                        issue(it, PatchIssueKind::RowChanged, format!("not deleting row `{}`: it has changed since the diff was made", show(it.patch_row)));
+                        it.kind = Kind::Context; // keep the row
+                    }
+                }
+                Kind::Update if it.source_row < 0 => {
+                    // Maybe the update was already made: look for a row with the new values.
+                    self.current_row = it.patch_row;
+                    self.check_act();
+                    let vrow = self.row_info.value.clone().unwrap_or_default();
+                    let wanted: Vec<(usize, Option<String>)> = pre
+                        .iter()
+                        .filter_map(|&c| {
+                            let sc = *self.patch_in_source_col.get(&c)?;
+                            let txt = self.patch.get(c, it.patch_row as usize).unwrap_or("").to_string();
+                            let cell = examine_cell(0, 0, Some(&txt), "", &vrow, 0);
+                            let v = if cell.updated && !cell.conflicted {
+                                Csv::parse_cell(cell.rvalue.as_deref())
+                            } else {
+                                self.patch.get(c, it.patch_row as usize).map(String::from)
+                            };
+                            Some((sc, v))
+                        })
+                        .collect();
+                    let found = (1..orig.height()).find(|&r| {
+                        !self.used_rows.contains(&r)
+                            && wanted.iter().all(|(sc, v)| same(orig.get(*sc, r), v.as_deref()))
+                    });
+                    match found {
+                        Some(r) => {
+                            self.used_rows.insert(r);
+                            it.kind = Kind::Context;
+                            it.source_row = r as isize;
+                        }
+                        None => issue(it, PatchIssueKind::RowNotFound, format!("cannot update: no row matches `{}`", show(it.patch_row))),
+                    }
+                }
+                Kind::Update => {
+                    self.current_row = it.patch_row;
+                    self.check_act();
+                    if !self.row_info.updated {
+                        continue;
+                    }
+                    let vrow = self.row_info.value.clone().unwrap_or_default();
+                    for &c in &pre {
+                        let txt = self.patch.get(c, it.patch_row as usize).unwrap_or("").to_string();
+                        let cell = examine_cell(0, 0, Some(&txt), "", &vrow, 0);
+                        if !cell.updated {
+                            continue;
+                        }
+                        if cell.conflicted {
+                            skipped.insert((it.patch_row, c));
+                            issue(it, PatchIssueKind::Conflict, format!("the diff records a conflict in `{txt}`; left as is"));
+                            continue;
+                        }
+                        let Some(&sc) = self.patch_in_source_col.get(&c) else { continue };
+                        let current = orig.get(sc, it.source_row as usize);
+                        let old = Csv::parse_cell(cell.lvalue.as_deref());
+                        let new = Csv::parse_cell(cell.rvalue.as_deref());
+                        if same(current, new.as_deref()) {
+                            skipped.insert((it.patch_row, c)); // already applied
+                        } else if !same(current, old.as_deref()) {
+                            skipped.insert((it.patch_row, c));
+                            issue(
+                                it,
+                                PatchIssueKind::CellChanged,
+                                format!(
+                                    "not changing `{}` to `{}`: it is `{}`, the diff expects `{}`",
+                                    old.as_deref().unwrap_or("NULL"),
+                                    new.as_deref().unwrap_or("NULL"),
+                                    current.unwrap_or("NULL"),
+                                    old.as_deref().unwrap_or("NULL")
+                                ),
+                            );
+                        }
+                    }
+                }
+                Kind::Add if !column_changes && it.patch_row > self.preamble_row => {
+                    let n = orig.height();
+                    let present = present.get_or_insert_with(|| {
+                        let mut m: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+                        for r in 1..n {
+                            if self.used_rows.contains(&r) {
+                                continue;
+                            }
+                            let sig = post
+                                .iter()
+                                .filter_map(|c| self.patch_in_source_col.get(c))
+                                .map(|&sc| orig.get(sc, r).unwrap_or("").to_string())
+                                .collect();
+                            m.entry(sig).or_default().push(r);
+                        }
+                        m
+                    });
+                    let sig: Vec<String> = post
+                        .iter()
+                        .filter(|c| self.patch_in_source_col.contains_key(c))
+                        .map(|&c| self.patch.get(c, it.patch_row as usize).unwrap_or("").to_string())
+                        .collect();
+                    if let Some(rows) = present.get_mut(&sig) {
+                        if !rows.is_empty() {
+                            // already there: use that row instead of adding another
+                            let r = rows.remove(0);
+                            self.used_rows.insert(r);
+                            it.kind = Kind::Context;
+                            it.source_row = r as isize;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.issues.extend(issues);
+        skipped
     }
 
     fn finish_rows(&mut self) {

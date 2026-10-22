@@ -190,3 +190,85 @@ fn b26_table_names_are_escaped_in_html() {
     r.render_tables(&tabs);
     assert!(r.html().contains("<h3>&lt;b&gt;</h3>"));
 }
+
+fn apply(src: &str, diff_text: &str, force: bool) -> (String, Vec<daff::PatchIssue>) {
+    let mut t = parse(src);
+    let d = parse(diff_text);
+    let mut p = HighlightPatch::new(&mut t, &d);
+    p.force(force);
+    p.apply().unwrap();
+    let issues = p.issues().to_vec();
+    (csv(&t), issues)
+}
+
+const BASE: &str = "id,v\n1,a\n2,b\n3,c\n";
+const WANT: &str = "id,v\n1,a\n2,B\n3,c\n4,d\n";
+
+fn base_diff() -> String {
+    diff(None, BASE, WANT, Flags::default())
+}
+
+#[test]
+fn b24_applying_a_diff_twice_changes_nothing_and_reports_nothing() {
+    let (once, issues) = apply(BASE, &base_diff(), false);
+    assert_eq!((once.as_str(), issues.len()), (WANT, 0));
+    let (twice, issues) = apply(&once, &base_diff(), false);
+    assert_eq!((twice.as_str(), issues.len()), (WANT, 0));
+}
+
+#[test]
+fn b24_changed_cell_is_left_alone_and_reported() {
+    let (out, issues) = apply("id,v\n1,a\n2,CHANGED\n3,c\n", &base_diff(), false);
+    assert_eq!(out, "id,v\n1,a\n2,CHANGED\n3,c\n4,d\n");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].kind, daff::PatchIssueKind::CellChanged);
+    assert_eq!(issues[0].patch_row, 2);
+    // --force overwrites as the reference does
+    let (out, issues) = apply("id,v\n1,a\n2,CHANGED\n3,c\n", &base_diff(), true);
+    assert_eq!((out.as_str(), issues.len()), (WANT, 0));
+}
+
+#[test]
+fn b24_update_of_a_missing_row_is_reported() {
+    let (out, issues) = apply("id,v\n1,a\n3,c\n", &base_diff(), false);
+    assert_eq!(out, "id,v\n1,a\n3,c\n4,d\n");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].kind, daff::PatchIssueKind::RowNotFound);
+}
+
+#[test]
+fn b24_changed_row_is_not_deleted() {
+    let d = diff(None, "id,v,w\n1,a,x\n2,b,y\n", "id,v,w\n1,a,x\n", Flags::default());
+    let (out, issues) = apply("id,v,w\n1,a,x\n2,b,CHANGED\n", &d, false);
+    assert_eq!(out, "id,v,w\n1,a,x\n2,b,CHANGED\n");
+    assert_eq!(issues[0].kind, daff::PatchIssueKind::RowChanged);
+    // a row that is already gone is fine
+    let (out, issues) = apply("id,v,w\n1,a,x\n", &d, false);
+    assert_eq!((out.as_str(), issues.len()), ("id,v,w\n1,a,x\n", 0));
+}
+
+#[test]
+fn b24_conflict_in_a_three_way_diff_is_reported() {
+    let d = diff(Some("id,v\n1,a\n"), "id,v\n1,L\n", "id,v\n1,R\n", Flags::default());
+    let (out, issues) = apply("id,v\n1,L\n", &d, false);
+    assert_eq!(out, "id,v\n1,L\n");
+    assert_eq!(issues[0].kind, daff::PatchIssueKind::Conflict);
+}
+
+#[test]
+fn b24_column_changes_are_not_made_twice() {
+    let (a, b) = ("id,v\n1,a\n", "id,v,n\n1,a,x\n");
+    let d = diff(None, a, b, Flags::default());
+    let (once, _) = apply(a, &d, false);
+    assert_eq!(once, b);
+    let (twice, issues) = apply(&once, &d, false);
+    assert_eq!((twice.as_str(), issues.len()), (b, 0));
+}
+
+#[test]
+fn b28_index_diffs_apply() {
+    let flags = Flags { always_show_order: true, never_show_order: false, ..Flags::default() };
+    let d = diff(None, BASE, WANT, flags);
+    assert!(d.starts_with("@:@"), "{d}");
+    assert_eq!(apply(BASE, &d, false).0, WANT);
+}

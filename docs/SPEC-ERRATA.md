@@ -41,3 +41,11 @@ Each item is checked by a test.
     deleted rows are interleaved by their position in the local table. Because
     that interleaving is only a hint once rows move, a patch does not use the
     position of a deleted row to place other rows.
+11. **Applying a diff checks what it expects.** The spec does not say what a
+    patch does when the table differs from the one the diff was made from.
+    The rule used: a modified cell is changed only if it still has the old
+    value (it is left alone if it already has the new value, and reported
+    otherwise); a deleted row is removed only if it still looks like the row
+    shown; an inserted row that is already there is not added twice. Blank and
+    NULL are treated as equal for these checks, as the spec says blank cells
+    are ambiguous.

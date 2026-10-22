@@ -321,6 +321,7 @@ If you need more control, here is the full list of flags:
      -w / --ignore-whitespace: ignore changes in leading/trailing whitespace
      -i / --ignore-case: ignore differences in case
      -d EPS / --ignore-epsilon EPS: ignore small floating point differences
+     --force:       (patch) apply the diff even where the table does not match it
      --reference-compat: reproduce the bugs of the original daff 1.4.2 (see docs/BUGS.md)
 
   daff render [--output OUTPUT.html] [--css CSS.css] [--fragment] [--plain] diff.csv
@@ -336,6 +337,7 @@ struct Opts {
     fail_if_diff: bool,
     inplace: bool,
     git: bool,
+    force: bool,
     order_set: bool,
     args: Vec<String>,
 }
@@ -347,6 +349,7 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
         fail_if_diff: false,
         inplace: false,
         git: false,
+        force: false,
         order_set: false,
         args: Vec::new(),
     };
@@ -388,6 +391,7 @@ fn parse_opts(st: &mut State, argv: Vec<String>) -> Res<Opts> {
             }
             "--inplace" => o.inplace = true,
             "--git" => o.git = true,
+            "--force" => o.force = true,
             "--reference-compat" => daff::set_reference_compat(true),
             "--unordered" => {
                 o.flags.ordered = false;
@@ -556,7 +560,7 @@ fn run(argv: Vec<String>) -> Res<u8> {
         daff::set_reference_compat(true);
     }
     let mut st = State::new();
-    let Opts { mut flags, output, fail_if_diff, inplace, git, order_set, mut args } = parse_opts(&mut st, argv)?;
+    let Opts { mut flags, output, fail_if_diff, inplace, git, force, order_set, mut args } = parse_opts(&mut st, argv)?;
     if args.first().map(String::as_str) == Some("help") || args.is_empty() {
         eprint!("{USAGE}");
         return Ok(1);
@@ -692,9 +696,19 @@ fn run(argv: Vec<String>) -> Res<u8> {
         "render" => st.render_table(&flags, &output, &a)?,
         "patch" => {
             let patch = b.ok_or("patch needs a table and a patch")?;
-            HighlightPatch::new(&mut a, &patch).apply().map_err(|e| e.to_string())?;
+            let mut patcher = HighlightPatch::new(&mut a, &patch);
+            patcher.force(force || daff::reference_compat());
+            patcher.apply().map_err(|e| e.to_string())?;
+            let issues = patcher.issues().to_vec();
             st.write_bom = true;
             st.save_table(&flags, &output, &a, None)?;
+            for i in &issues {
+                eprintln!("diff line {}: {}", i.patch_row + 1, i.message);
+            }
+            if !issues.is_empty() {
+                eprintln!("{} problem{} applying the diff; the rest was applied", issues.len(), if issues.len() > 1 { "s" } else { "" });
+                return Ok(1);
+            }
         }
         "merge" => {
             let remote = b.ok_or("merge needs parent, local and remote tables")?;

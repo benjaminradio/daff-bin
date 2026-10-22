@@ -4,6 +4,7 @@
   patch:  patch(a, diff(a, b)) == b
   merge:  merge(a, a, b) == b   and   merge(a, b, a) == b   (parent, local, remote)
   noop:   diff(a, a) has no changes
+  idempotent: applying the same diff twice equals applying it once, without complaints
 
 Usage: prop_roundtrip.py DAFF_BINARY [N] [SEED] [pool=plain|nulls|unique|unique-nulls]
 Prints a few minimal failing cases per property.
@@ -104,10 +105,12 @@ with tempfile.TemporaryDirectory() as d:
         base = table(rnd.randint(1, 5), rnd.randint(0, 7))
         other = mutate(base, KINDS[kind])
         write(a, base); write(b, other)
-        for opts in ([], ["--id", "c0"], ["--all"]):
+        for opts in ([], ["--id", "c0"], ["--all"], ["--index"]):
             d_rc, d_txt, _ = run("diff", *opts, a, b)
             open(dp, "w").write(d_txt)
-            rc, p_txt, _ = run("patch", a, dp)
+            rc, p_txt, p_err = run("patch", a, dp)
+            if rc != 0:
+                fails.setdefault(("false-issue", kind, " ".join(opts)), []).append((read(a), read(b), d_txt, p_err, ""))
             want = run("trim", b)[1]
             # Without --all the diff cannot show rows it omits, so values of an
             # added column in those rows are unknowable: null and blank match.
@@ -115,6 +118,13 @@ with tempfile.TemporaryDirectory() as d:
             if not eq:
                 key = ("patch", kind, " ".join(opts))
                 fails.setdefault(key, []).append((read(a), read(b), d_txt, p_txt, want))
+            else:
+                # applying the same diff again must change nothing and report nothing
+                open(out, "w").write(p_txt)
+                rc2, again, err2 = run("patch", out, dp)
+                if again != p_txt or rc2 != 0:
+                    key = ("idempotent", kind, " ".join(opts))
+                    fails.setdefault(key, []).append((read(a), read(b), d_txt, again + "[rc %s] %s" % (rc2, err2), p_txt))
         rc, m_txt, _ = run("merge", a, a, b)
         want = run("trim", b)[1]
         if norm(m_txt) != norm(want):

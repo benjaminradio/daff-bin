@@ -47,7 +47,8 @@ The properties are checked by `scripts/prop_roundtrip.py` and
 | B-21 | INTENT | Unknown `--id`, `--act` and `--ignore` values are silently accepted | fixed |
 | B-22 | INTENT | `merge` ignores `--id`/`--ignore` | fixed |
 | B-23 | INTENT | `--inplace` never works | fixed |
-| B-24 | INTENT | `patch` does not notice that a row is already present or has changed | deferred (needs design) |
+| B-24 | INTENT | `patch` does not notice that a row is already present or has changed | fixed |
+| B-28 | INTENT | `patch` of a diff made with `--index` treats the action column as data | fixed |
 | B-25 | INTENT | Terminal columns are aligned by UTF-16 length, not display width | fixed |
 | B-26 | INTENT | Table names are not escaped in HTML headings | fixed |
 
@@ -164,10 +165,28 @@ in multi-table HTML are inserted into `<h3>` without escaping.
   dropped the move of a renamed column (fixed as B-27 below).
 - **B-27** (found while fixing the above): `patch` ignored the `:` of a moved
   and renamed column. Fixed.
-- **B-24** is deferred: applying a diff to a table that is not the one it was
-  made from is not detected. A `--check` mode would verify that every
-  matched row has the cell values the diff expects; that needs a design for
-  reporting mismatches.
+- **B-24**: `patch` now checks the diff against the table, per row of the
+  diff:
+  - a cell that already has its new value is left alone (applying a diff twice
+    changes nothing);
+  - a cell that has neither the old nor the new value is left alone and
+    reported (`CellChanged`), as is a conflict recorded by a three-way diff
+    (`Conflict`);
+  - a row to delete that differs from the row the diff shows is kept and
+    reported (`RowChanged`); one that is already gone is fine;
+  - a row to update that cannot be found is reported (`RowNotFound`) unless a
+    row with the new values exists;
+  - a row to add that is already present is not added again (when the diff
+    changes no columns);
+  - column additions, deletions and renames the table already has are not made
+    twice.
+  Everything that fits is applied, problems go to stderr as
+  `diff line N: ...`, and the exit status is 1, like a merge with conflicts.
+  `patch --force` (or `--reference-compat`) skips the checks. In the library:
+  `HighlightPatch::issues()` and `force()`.
+- **B-28**: with an index column (`@:@` corner) the reference starts reading
+  the payload one column too early, so the action column is read as a column
+  called `@@`. Fixed together with B-24, which exposed it.
 - **B-14** differs from the spec's example in one respect: the padding only
   grows when the *row* has a collision, so other rows keep the plain `->`.
 - The fixed `patch` places rows omitted from a diff (`...`) by their source

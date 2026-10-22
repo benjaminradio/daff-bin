@@ -36,7 +36,7 @@ pub use diff::{DiffSummary, TableDiff};
 pub use error::{Error, Result};
 pub use flags::Flags;
 pub use merge::{ConflictInfo, ConflictKind, Merger};
-pub use patch::HighlightPatch;
+pub use patch::{HighlightPatch, PatchIssue, PatchIssueKind};
 pub use render::{DiffRender, TerminalDiffRender};
 pub use table::{Table, TableMeta};
 pub use tables::Tables;
